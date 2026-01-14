@@ -1,0 +1,1090 @@
+"""
+Backtesting and Validation Engine for FPL Prediction Platform
+Implements Expanding Window methodology with solver integration.
+Features:
+- Expanding Window: Train and predict week by week from season start
+- Metrics: RMSE and Spearman Rank Correlation
+- Solver Integration: Simulate transfers and calculate cumulative points
+- Memory Management: 4GB RAM limit with gc.collect() and parquet storage
+- Reporting: Season-end summary with graphical metrics
+"""
+import numpy as np
+import pandas as pd
+from typing import Dict, List, Optional, Tuple
+import logging
+import gc
+import os
+import tempfile
+import json
+from datetime import datetime
+from sqlalchemy.orm import Session
+from sqlalchemy import and_
+from scipy.stats import spearmanr
+from sklearn.metrics import mean_squared_error
+
+from app.database import SessionLocal
+from app.models import PlayerGameweekStats, Player
+from app.services.ml_engine import PLEngine, AttackModel
+from app.services.solver import FPLSolver
+from app.services.strategy import StrategyService
+
+logger = logging.getLogger(__name__)
+
+
+class BacktestEngine:
+    """
+    Backtesting engine for FPL prediction validation.
+    Implements Expanding Window methodology with solver integration.
+    """
+    
+    def __init__(
+        self,
+        season: str = "2025-26",
+        min_train_weeks: int = 5,
+        memory_limit_mb: int = 3500,  # 3.5GB buffer for 4GB limit
+        temp_dir: Optional[str] = None
+    ):
+        """
+        Initialize backtesting engine.
+        
+        Args:
+            season: Season to backtest (default: "2025-26")
+            min_train_weeks: Minimum weeks needed for training (default: 5)
+            memory_limit_mb: Memory limit in MB (default: 3500)
+            temp_dir: Temporary directory for parquet storage (default: system temp)
+        """
+        self.season = season
+        self.min_train_weeks = min_train_weeks
+        self.memory_limit_mb = memory_limit_mb
+        self.temp_dir = temp_dir or tempfile.gettempdir()
+        
+        # Create temp directory if it doesn't exist
+        os.makedirs(self.temp_dir, exist_ok=True)
+        
+        # Initialize services
+        self.plengine = None
+        self.solver = None
+        self.strategy_service = StrategyService()
+        
+        # Results storage
+        self.weekly_results = []
+        self.cumulative_points = 0.0
+        self.total_transfer_cost = 0
+        
+    def run_expanding_window_backtest(
+        self,
+        start_gameweek: int = 1,
+        end_gameweek: Optional[int] = None,
+        use_solver: bool = True,
+        solver_budget: float = 100.0,
+        solver_horizon: int = 3
+    ) -> Dict:
+        """
+        Run expanding window backtest.
+        Trains model on all previous weeks and predicts current week.
+        
+        Args:
+            start_gameweek: Starting gameweek (default: 1)
+            end_gameweek: Ending gameweek (None = all available)
+            use_solver: Whether to use solver for team optimization (default: True)
+            solver_budget: Budget for solver (default: 100.0)
+            solver_horizon: Horizon weeks for solver (default: 3)
+        
+        Returns:
+            Dictionary with backtest results and metrics
+        """
+        logger.info("=" * 60)
+        logger.info(f"Starting Expanding Window Backtest - Season {self.season}")
+        logger.info("=" * 60)
+        
+        db = SessionLocal()
+        try:
+            # Get all available gameweeks
+            all_gameweeks = db.query(PlayerGameweekStats.gameweek).filter(
+                PlayerGameweekStats.season == self.season
+            ).distinct().order_by(PlayerGameweekStats.gameweek).all()
+            
+            if not all_gameweeks:
+                # Try to find available seasons
+                available_seasons = db.query(PlayerGameweekStats.season).distinct().all()
+                available_seasons_list = [s[0] for s in available_seasons]
+                
+                if not available_seasons_list:
+                    raise ValueError(
+                        f"No data found in database for season '{self.season}'. "
+                        f"Please run ETL service first to load player_gameweek_stats data. "
+                        f"Use: FPLAPIService.fetch_comprehensive_player_data() and ETLService.upsert_player_gameweek_stats()"
+                    )
+                
+                # Try to match season (flexible matching)
+                matched_season = None
+                for avail_season in available_seasons_list:
+                    if self.season in str(avail_season) or str(avail_season) in self.season:
+                        matched_season = avail_season
+                        break
+                
+                if matched_season:
+                    logger.warning(f"Season '{self.season}' not found. Using '{matched_season}' instead.")
+                    self.season = matched_season
+                    all_gameweeks = db.query(PlayerGameweekStats.gameweek).filter(
+                        PlayerGameweekStats.season == self.season
+                    ).distinct().order_by(PlayerGameweekStats.gameweek).all()
+                    
+                    if not all_gameweeks:
+                        raise ValueError(
+                            f"No gameweek data found for season '{matched_season}'. "
+                            f"Please ensure player_gameweek_stats table has data."
+                        )
+                else:
+                    raise ValueError(
+                        f"No data found for season '{self.season}'. "
+                        f"Available seasons: {available_seasons_list}. "
+                        f"Please run ETL to load data for the desired season."
+                    )
+            
+            all_available_gameweeks = [gw[0] for gw in all_gameweeks]
+            
+            # Filter gameweeks for testing (but keep all for training)
+            if end_gameweek:
+                test_gameweeks = [gw for gw in all_available_gameweeks if start_gameweek <= gw <= end_gameweek]
+            else:
+                test_gameweeks = [gw for gw in all_available_gameweeks if gw >= start_gameweek]
+            
+            logger.info(f"Found {len(all_available_gameweeks)} total gameweeks: {all_available_gameweeks[0]} to {all_available_gameweeks[-1]}")
+            logger.info(f"Testing {len(test_gameweeks)} gameweeks: {test_gameweeks[0] if test_gameweeks else 'N/A'} to {test_gameweeks[-1] if test_gameweeks else 'N/A'}")
+            
+            # Initialize solver if needed
+            if use_solver:
+                self.solver = FPLSolver(
+                    budget=solver_budget,
+                    horizon_weeks=solver_horizon,
+                    free_transfers=1,
+                    discount_factor=0.9
+                )
+            
+            # Expanding window: train on all previous weeks, predict current
+            for i, current_gw in enumerate(test_gameweeks):
+                logger.info("")
+                logger.info(f"Processing Gameweek {current_gw} ({i+1}/{len(test_gameweeks)})")
+                logger.info("-" * 60)
+                
+                # Get training data (all weeks before current from ALL available gameweeks)
+                training_weeks = [gw for gw in all_available_gameweeks if gw < current_gw]
+                
+                # Check if we have enough training data
+                if len(training_weeks) < self.min_train_weeks:
+                    logger.info(f"Skipping GW{current_gw}: Only {len(training_weeks)} training weeks available, need at least {self.min_train_weeks}")
+                    continue
+                
+                if not training_weeks:
+                    logger.warning(f"No training data for GW{current_gw}")
+                    continue
+                
+                # Run backtest for this week
+                week_result = self._backtest_week(
+                    db=db,
+                    current_gw=current_gw,
+                    training_weeks=training_weeks,
+                    use_solver=use_solver
+                )
+                
+                if week_result:
+                    self.weekly_results.append(week_result)
+                    self.cumulative_points += week_result.get('net_points', 0.0)
+                    self.total_transfer_cost += week_result.get('transfer_cost', 0)
+                    
+                    logger.info(f"GW{current_gw} Results:")
+                    logger.info(f"  Predicted Points: {week_result.get('predicted_points', 0):.2f}")
+                    logger.info(f"  Actual Points: {week_result.get('actual_points', 0):.2f}")
+                    logger.info(f"  RMSE: {week_result.get('rmse', 0):.2f}")
+                    logger.info(f"  Spearman: {week_result.get('spearman', 0):.3f}")
+                    if use_solver:
+                        logger.info(f"  Net Points: {week_result.get('net_points', 0):.2f}")
+                        logger.info(f"  Transfer Cost: {week_result.get('transfer_cost', 0)}")
+                
+                # Memory management
+                self._manage_memory()
+                
+        finally:
+            db.close()
+        
+        # Calculate overall metrics
+        overall_metrics = self._calculate_overall_metrics()
+        
+        # Generate report
+        report = self._generate_report(overall_metrics)
+        
+        # Optionally save to database (uncomment if you want this)
+        # self.save_report_to_database(report, model_version="5.0.0")
+        
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("Backtest Complete")
+        logger.info("=" * 60)
+        logger.info(f"Total Weeks Tested: {len(self.weekly_results)}")
+        logger.info(f"Overall RMSE: {overall_metrics.get('rmse', 0):.2f}")
+        logger.info(f"Overall Spearman: {overall_metrics.get('spearman', 0):.3f}")
+        if use_solver:
+            logger.info(f"Cumulative Points: {self.cumulative_points:.2f}")
+            logger.info(f"Total Transfer Cost: {self.total_transfer_cost}")
+        
+        return report
+    
+    def _backtest_week(
+        self,
+        db: Session,
+        current_gw: int,
+        training_weeks: List[int],
+        use_solver: bool = True
+    ) -> Optional[Dict]:
+        """
+        Backtest a single gameweek.
+        
+        Args:
+            db: Database session
+            current_gw: Current gameweek to predict
+            training_weeks: List of weeks to use for training
+            use_solver: Whether to use solver
+        
+        Returns:
+            Dictionary with week results
+        """
+        try:
+            # 1. Load training data
+            logger.info(f"Loading training data ({len(training_weeks)} weeks)...")
+            training_data = self._load_training_data(db, training_weeks)
+            
+            if training_data.empty:
+                logger.warning(f"No training data for weeks {training_weeks}")
+                return None
+            
+            # Save to pickle for memory efficiency (fallback if parquet not available)
+            training_file = os.path.join(self.temp_dir, f"training_gw{current_gw}.pkl")
+            try:
+                # Try parquet first (more efficient)
+                parquet_file = training_file.replace('.pkl', '.parquet')
+                training_data.to_parquet(parquet_file, index=False)
+                training_file = parquet_file
+            except ImportError:
+                # Fallback to pickle
+                training_data.to_pickle(training_file)
+            del training_data
+            gc.collect()
+            
+            # 2. Load current week data (for prediction and validation)
+            logger.info(f"Loading GW{current_gw} data...")
+            current_data = self._load_gameweek_data(db, current_gw)
+            
+            if current_data.empty:
+                logger.warning(f"No data for GW{current_gw}")
+                return None
+            
+            # 3. Initialize and train model
+            logger.info("Training model...")
+            self.plengine = PLEngine()
+            # CRITICAL: Ensure models are loaded before using them
+            self.plengine._ensure_models_loaded()
+            
+            # Reload training data
+            if training_file.endswith('.parquet'):
+                try:
+                    training_data = pd.read_parquet(training_file)
+                except ImportError:
+                    # Fallback to pickle if parquet read fails
+                    pickle_file = training_file.replace('.parquet', '.pkl')
+                    if os.path.exists(pickle_file):
+                        training_data = pd.read_pickle(pickle_file)
+                    else:
+                        raise
+            else:
+                training_data = pd.read_pickle(training_file)
+            
+            # Prepare training features
+            xmins_features, xmins_labels = self._prepare_xmins_features(training_data)
+            attack_features, attack_xg_labels, attack_xa_labels = self._prepare_attack_features(training_data)
+            
+            # Train model
+            self.plengine.train(
+                training_data=training_data,
+                xmins_features=xmins_features,
+                xmins_labels=xmins_labels,
+                attack_features=attack_features,
+                attack_xg_labels=attack_xg_labels,
+                attack_xa_labels=attack_xa_labels
+            )
+            
+            # Cleanup training data
+            del training_data
+            gc.collect()
+            
+            # 4. Make predictions for current week
+            logger.info("Making predictions...")
+            predictions = []
+            actual_points = []
+            
+            for _, row in current_data.iterrows():
+                player_data = row.to_dict()
+                
+                # Get prediction
+                try:
+                    prediction = self.plengine.predict(
+                        player_data=player_data,
+                        fixture_data=None
+                    )
+                    pred_points = prediction.get('expected_points', 0.0)
+                    predictions.append(pred_points)
+                    actual_points.append(player_data.get('total_points', 0))
+                except Exception as e:
+                    logger.warning(f"Prediction error for player {player_data.get('fpl_id')}: {str(e)}")
+                    predictions.append(0.0)
+                    actual_points.append(player_data.get('total_points', 0))
+            
+            # 5. Calculate metrics
+            rmse = np.sqrt(mean_squared_error(actual_points, predictions))
+            spearman_corr, _ = spearmanr(actual_points, predictions)
+            
+            # 6. Solver integration (if enabled)
+            solver_result = None
+            net_points = 0.0
+            transfer_cost = 0
+            
+            if use_solver and self.solver:
+                logger.info("Running solver optimization...")
+                solver_result = self._run_solver_for_week(
+                    current_data,
+                    predictions,
+                    current_gw
+                )
+                
+                if solver_result:
+                    net_points = solver_result.get('net_points', 0.0)
+                    transfer_cost = solver_result.get('transfer_cost', 0)
+            
+            # 7. Calculate predicted vs actual for selected team
+            predicted_points = sum(predictions[:11]) if len(predictions) >= 11 else sum(predictions)
+            actual_team_points = sum(actual_points[:11]) if len(actual_points) >= 11 else sum(actual_points)
+            
+            # Cleanup
+            del current_data
+            del predictions
+            del actual_points
+            gc.collect()
+            
+            # Remove temp file
+            if os.path.exists(training_file):
+                os.remove(training_file)
+            
+            return {
+                'gameweek': current_gw,
+                'predicted_points': predicted_points,
+                'actual_points': actual_team_points,
+                'rmse': rmse,
+                'spearman': spearman_corr,
+                'n_predictions': len(predictions) if 'predictions' in locals() else 0,
+                'net_points': net_points,
+                'transfer_cost': transfer_cost,
+                'solver_result': solver_result
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in backtest for GW{current_gw}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
+    def _load_training_data(
+        self,
+        db: Session,
+        gameweeks: List[int]
+    ) -> pd.DataFrame:
+        """
+        Load training data for specified gameweeks.
+        Joins with Player table to get position and price.
+        
+        CRITICAL: Uses fpl_id for join (NOT player_id)!
+        Season filter uses self.season (default: "2025-26").
+        
+        Args:
+            db: Database session
+            gameweeks: List of gameweeks to load
+        
+        Returns:
+            DataFrame with training data
+        """
+        from sqlalchemy.orm import joinedload
+        
+        # CRITICAL: Join on fpl_id (NOT player_id)
+        query = db.query(PlayerGameweekStats).join(
+            Player, PlayerGameweekStats.fpl_id == Player.fpl_id
+        ).filter(
+            and_(
+                PlayerGameweekStats.season == self.season,  # Dynamic season filter (default: "2025-26")
+                PlayerGameweekStats.gameweek.in_(gameweeks)
+            )
+        )
+        
+        logger.info(f"Loading training data: season='{self.season}', gameweeks={gameweeks}")
+        data = pd.read_sql(query.statement, db.bind)
+        logger.info(f"Loaded {len(data)} rows from database (season='{self.season}', gameweeks={gameweeks})")
+        
+        # Verify fpl_id column exists
+        if not data.empty and 'fpl_id' not in data.columns:
+            logger.error("ERROR: 'fpl_id' column missing from training data! Join may have failed.")
+            return pd.DataFrame()
+        
+        if data.empty:
+            return pd.DataFrame()
+        
+        # CRITICAL: Merge with Player table to get position and price
+        # The join above only filters, we need to actually merge the columns
+        player_ids = data['fpl_id'].unique().tolist()
+        logger.info(f"Merging with Player table using fpl_id: {len(player_ids)} unique players")
+        players_query = db.query(Player).filter(Player.fpl_id.in_(player_ids))
+        players_df = pd.read_sql(players_query.statement, db.bind)
+        
+        if not players_df.empty:
+            # Merge to get position and price
+            data = data.merge(
+                players_df[['fpl_id', 'position', 'price', 'team']],
+                on='fpl_id',
+                how='left',
+                suffixes=('', '_player')
+            )
+            # Use player position and price if available
+            if 'position_player' in data.columns:
+                data['position'] = data['position_player'].fillna(data.get('position', 'MID'))
+            elif 'position' not in data.columns:
+                data['position'] = 'MID'  # Default
+            
+            if 'price_player' in data.columns:
+                data['price'] = data['price_player'].fillna(data.get('price', 5.0))
+            elif 'price' not in data.columns:
+                data['price'] = 5.0  # Default
+            
+            # Preserve team name for solver team constraints
+            if 'team_player' in data.columns:
+                data['team'] = data['team_player'].fillna(data.get('team'))
+        else:
+            # No player data, set defaults
+            if 'position' not in data.columns:
+                data['position'] = 'MID'
+            if 'price' not in data.columns:
+                data['price'] = 5.0
+        
+        logger.info(f"After merge: {len(data)} rows with position and price columns")
+        
+        return data
+    
+    def _load_gameweek_data(
+        self,
+        db: Session,
+        gameweek: int
+    ) -> pd.DataFrame:
+        """
+        Load data for a specific gameweek.
+        Joins with Player table to get position and price.
+        
+        CRITICAL: Uses fpl_id for join (NOT player_id)!
+        Season filter uses self.season (default: "2025-26").
+        
+        Args:
+            db: Database session
+            gameweek: Gameweek to load
+        
+        Returns:
+            DataFrame with gameweek data
+        """
+        # Load PlayerGameweekStats with season filter (dynamic: self.season = "2025-26")
+        stats_query = db.query(PlayerGameweekStats).filter(
+            and_(
+                PlayerGameweekStats.season == self.season,  # Dynamic season filter
+                PlayerGameweekStats.gameweek == gameweek
+            )
+        )
+        
+        logger.info(f"Loading gameweek {gameweek} data: season='{self.season}'")
+        stats_df = pd.read_sql(stats_query.statement, db.bind)
+        logger.info(f"Loaded {len(stats_df)} rows for gameweek {gameweek} (season='{self.season}')")
+        
+        if stats_df.empty:
+            logger.warning(f"No data found for gameweek {gameweek} (season='{self.season}')")
+            return pd.DataFrame()
+        
+        # CRITICAL: Load Player data using fpl_id (NOT player_id)
+        player_ids = stats_df['fpl_id'].unique().tolist()
+        logger.info(f"Merging with Player table using fpl_id: {len(player_ids)} unique players")
+        players_query = db.query(Player).filter(Player.fpl_id.in_(player_ids))
+        players_df = pd.read_sql(players_query.statement, db.bind)
+        
+        if not players_df.empty:
+            # Merge to get position and price
+            stats_df = stats_df.merge(
+                players_df[['fpl_id', 'position', 'price', 'team']],
+                on='fpl_id',
+                how='left',
+                suffixes=('', '_player')
+            )
+            # Use player position and price if available
+            if 'position_player' in stats_df.columns:
+                stats_df['position'] = stats_df['position_player'].fillna(stats_df.get('position', 'MID'))
+            elif 'position' not in stats_df.columns:
+                stats_df['position'] = 'MID'  # Default
+            
+            if 'price_player' in stats_df.columns:
+                stats_df['price'] = stats_df['price_player'].fillna(stats_df.get('price', 5.0))
+            elif 'price' not in stats_df.columns:
+                stats_df['price'] = 5.0  # Default
+            
+            # Preserve team name for solver team constraints
+            if 'team_player' in stats_df.columns:
+                stats_df['team'] = stats_df['team_player'].fillna(stats_df.get('team'))
+        else:
+            # No player data, set defaults
+            if 'position' not in stats_df.columns:
+                stats_df['position'] = 'MID'
+            if 'price' not in stats_df.columns:
+                stats_df['price'] = 5.0
+        
+        return stats_df
+    
+    def _prepare_xmins_features(self, training_data: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Prepare features for xMins model.
+        Must match XMinsModel.extract_features() signature exactly (8 features).
+        
+        Expected features (in order):
+        1. days_since_last_match
+        2. is_cup_week
+        3. injury_status (0=fit, 1=doubtful, 2=out)
+        4. recent_minutes_avg / 90.0
+        5. position_depth / 3.0
+        6. form_score / 10.0
+        7. price (normalized to 0-1)
+        8. rotation_risk
+        
+        Args:
+            training_data: Training DataFrame
+        
+        Returns:
+            (features, labels) tuple
+        """
+        features = []
+        labels = []
+        
+        # Group by player to calculate days_since_last_match and recent_minutes_avg
+        training_data_sorted = training_data.sort_values(['fpl_id', 'gameweek'])
+        
+        for idx, row in training_data_sorted.iterrows():
+            player_id = row.get('fpl_id')
+            
+            # Get all matches for this player
+            player_data = training_data_sorted[training_data_sorted['fpl_id'] == player_id]
+            player_data = player_data.sort_values('gameweek')
+            
+            current_gw = row.get('gameweek', 1)
+            prev_matches = player_data[player_data['gameweek'] < current_gw]
+            
+            # 1. days_since_last_match
+            if len(prev_matches) > 0:
+                last_gw = prev_matches['gameweek'].max()
+                days_since = float((current_gw - last_gw) * 7)  # Approximate: 7 days per gameweek
+            else:
+                days_since = 14.0  # Default: 2 weeks
+            
+            # 2. is_cup_week (default: no cup)
+            is_cup_week = 0.0
+            
+            # 3. injury_status (0=fit, 1=doubtful, 2=out)
+            # Try to get from status field, default to fit
+            status = str(row.get('status', 'a')).lower()
+            injury_status_map = {'a': 0, 'd': 1, 'i': 2, 'n': 0, 's': 2}
+            injury_status = float(injury_status_map.get(status, 0))
+            
+            # 4. recent_minutes_avg / 90.0
+            if len(prev_matches) > 0:
+                recent_minutes = prev_matches['minutes'].tail(3).tolist()
+                recent_minutes = [m for m in recent_minutes if m > 0]  # Filter zeros
+                if recent_minutes:
+                    recent_minutes_avg = float(np.mean(recent_minutes)) / 90.0
+                else:
+                    recent_minutes_avg = 0.5  # Default: 45 minutes
+            else:
+                recent_minutes_avg = 0.5  # Default
+            
+            # 5. position_depth / 3.0 (default: medium depth)
+            position_depth = 2.0 / 3.0
+            
+            # 6. form_score / 10.0 (use total_points as proxy)
+            form_score = float(row.get('total_points', 0)) / 10.0
+            
+            # 7. price (normalized to 0-1, FPL prices are in 0.1 increments, max ~15M)
+            price = float(row.get('price', 5.0)) / 100.0  # Normalize to 0-1
+            
+            # 8. rotation_risk (default: medium)
+            rotation_risk = 0.5
+            
+            # Features matching XMinsModel.extract_features() exactly (8 features)
+            feature_vector = [
+                days_since,  # 1. days_since_last_match
+                is_cup_week,  # 2. is_cup_week
+                injury_status,  # 3. injury_status
+                recent_minutes_avg,  # 4. recent_minutes_avg / 90.0
+                position_depth,  # 5. position_depth / 3.0
+                form_score,  # 6. form_score / 10.0
+                price,  # 7. price (normalized)
+                rotation_risk  # 8. rotation_risk
+            ]
+            features.append(feature_vector)
+            
+            # Label: 1 if started (minutes > 0), 0 otherwise
+            labels.append(1 if row.get('minutes', 0) > 0 else 0)
+        
+        return np.array(features), np.array(labels)
+    
+    def _prepare_attack_features(
+        self,
+        training_data: pd.DataFrame
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Prepare features for Attack model (xG/xA).
+        
+        Args:
+            training_data: Training DataFrame
+        
+        Returns:
+            (features, xg_labels, xa_labels) tuple
+        """
+        features = []
+        xg_labels = []
+        xa_labels = []
+
+        # IMPORTANT:
+        # The AttackModel in `app.services.ml_engine.AttackModel` uses a 17-feature vector in `extract_features()`.
+        # We must train with the SAME feature shape, otherwise the scaler will be fit on one dimensionality
+        # and prediction-time transform will throw (observed: "X has 17 features, but StandardScaler is expecting 6").
+        # CRITICAL: Ensure attack_model is not None - if plengine or attack_model is None, create new instance
+        # Also ensure models are loaded if plengine exists
+        if self.plengine is not None:
+            # Ensure models are loaded
+            self.plengine._ensure_models_loaded()
+            if self.plengine.attack_model is not None:
+                attack_model = self.plengine.attack_model
+            else:
+                # Fallback: create new AttackModel instance for feature extraction
+                logger.warning("plengine.attack_model is None, creating new AttackModel instance")
+                attack_model = AttackModel()
+        else:
+            # Fallback: create new AttackModel instance for feature extraction
+            logger.warning("plengine is None, creating new AttackModel instance")
+            attack_model = AttackModel()
+
+        for _, row in training_data.iterrows():
+            player_data = row.to_dict()
+
+            # Provide sensible per-90 fallbacks for training rows (AttackModel.extract_features prefers *_per_90 keys)
+            minutes = float(player_data.get('minutes', 0) or 0)
+            minutes_scale = 90.0 / max(minutes, 1.0)
+
+            # Use training row xg/xa/goals/assists as proxies
+            if 'xg_per_90' not in player_data:
+                player_data['xg_per_90'] = float(player_data.get('xg', 0.0)) * minutes_scale
+            if 'xa_per_90' not in player_data:
+                player_data['xa_per_90'] = float(player_data.get('xa', 0.0)) * minutes_scale
+            if 'goals_per_90' not in player_data:
+                player_data['goals_per_90'] = float(player_data.get('goals', 0.0)) * minutes_scale
+            if 'assists_per_90' not in player_data:
+                player_data['assists_per_90'] = float(player_data.get('assists', 0.0)) * minutes_scale
+
+            # Use `was_home` to build minimal fixture context
+            fixture_data = {'is_home': bool(player_data.get('was_home', True))}
+
+            # Generate features using the same method used at prediction time
+            feature_arr = attack_model.extract_features(
+                player_data=player_data,
+                fixture_data=fixture_data,
+                fdr_data=None,
+                opponent_data=None,
+            )
+            features.append(feature_arr.flatten().tolist())
+
+            # Labels are the realized xG/xA for that row
+            xg_labels.append(float(player_data.get('xg', 0.0)))
+            xa_labels.append(float(player_data.get('xa', 0.0)))
+        
+        return np.array(features), np.array(xg_labels), np.array(xa_labels)
+    
+    def _run_solver_for_week(
+        self,
+        current_data: pd.DataFrame,
+        predictions: List[float],
+        gameweek: int
+    ) -> Optional[Dict]:
+        """
+        Run solver optimization for a gameweek.
+        
+        Args:
+            current_data: Current week player data
+            predictions: Predicted points for each player
+            gameweek: Current gameweek
+        
+        Returns:
+            Solver result dictionary
+        """
+        try:
+            # Prepare players data for solver
+            players_data = []
+            
+            for idx, (_, row) in enumerate(current_data.iterrows()):
+                # Get player position from database
+                player = row.to_dict()
+                
+                # Get position
+                position = self._get_position_from_data(player)
+                
+                # Get price (try different field names)
+                price = player.get('price', 50.0)
+                if isinstance(price, (int, float)) and price > 100:
+                    price = price / 10.0  # Convert from FPL units
+                elif not isinstance(price, (int, float)):
+                    price = 5.0  # Default
+                
+                # Get team_id (try different field names)
+                # Prefer player's own team name (from Player table join) to enforce FPL team limits correctly.
+                # Fallback to opponent_team if no team info is available.
+                team_id = player.get('team')
+                if not team_id:
+                    team_id = player.get('opponent_team', 0)
+                
+                players_data.append({
+                    'id': player.get('fpl_id', idx),
+                    'name': f"Player_{player.get('fpl_id', idx)}",
+                    'position': position,
+                    'price': float(price),
+                    'team_id': team_id,
+                    'expected_points': [predictions[idx] if idx < len(predictions) else 0.0] * 3,
+                    'p_start': [0.8] * 3  # Default probability
+                })
+            
+            # Run solver
+            solution = self.solver.optimize_team(
+                players_data=players_data,
+                current_squad=None,  # Start fresh each week for backtest
+                locked_players=None,
+                excluded_players=None
+            )
+            
+            # Calculate net points (points - transfer cost)
+            total_points = solution.get('total_expected_points', 0.0)
+            transfer_cost = solution.get('total_transfer_cost', 0)
+            net_points = total_points - transfer_cost
+            
+            return {
+                'total_points': total_points,
+                'transfer_cost': transfer_cost,
+                'net_points': net_points,
+                'squad_size': len(solution.get('squad_week1', [])),
+                'starting_xi_size': len(solution.get('starting_xi_week1', []))
+            }
+            
+        except Exception as e:
+            logger.error(f"Solver error for GW{gameweek}: {str(e)}")
+            return None
+    
+    def _calculate_overall_metrics(self) -> Dict:
+        """
+        Calculate overall metrics from weekly results.
+        
+        Returns:
+            Dictionary with overall metrics
+        """
+        if not self.weekly_results:
+            return {}
+        
+        # Collect all predictions and actuals
+        all_predicted = []
+        all_actual = []
+        
+        for result in self.weekly_results:
+            all_predicted.append(result.get('predicted_points', 0.0))
+            all_actual.append(result.get('actual_points', 0.0))
+        
+        # Calculate overall RMSE
+        rmse = np.sqrt(mean_squared_error(all_actual, all_predicted))
+        
+        # Calculate overall Spearman correlation
+        spearman_corr, _ = spearmanr(all_actual, all_predicted)
+        
+        # Calculate MAE
+        mae = np.mean(np.abs(np.array(all_actual) - np.array(all_predicted)))
+        
+        # Calculate R-squared
+        ss_res = np.sum((np.array(all_actual) - np.array(all_predicted)) ** 2)
+        ss_tot = np.sum((np.array(all_actual) - np.mean(all_actual)) ** 2)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+        
+        return {
+            'rmse': rmse,
+            'mae': mae,
+            'spearman': spearman_corr,
+            'r_squared': r_squared,
+            'mean_actual': np.mean(all_actual),
+            'mean_predicted': np.mean(all_predicted),
+            'n_weeks': len(self.weekly_results),
+            'cumulative_points': self.cumulative_points,
+            'total_transfer_cost': self.total_transfer_cost
+        }
+    
+    def _generate_report(self, overall_metrics: Dict, save_to_file: bool = True) -> Dict:
+        """
+        Generate comprehensive backtest report.
+        
+        Args:
+            overall_metrics: Overall metrics dictionary
+            save_to_file: Whether to save report to file (default: True). Set to False for smoke tests.
+        
+        Returns:
+            Complete report dictionary
+        """
+        report = {
+            'season': self.season,
+            'methodology': 'expanding_window',
+            'min_train_weeks': self.min_train_weeks,
+            'total_weeks_tested': len(self.weekly_results),
+            'overall_metrics': overall_metrics,
+            'weekly_results': self.weekly_results,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Only save report to file if requested and if we have actual results
+        # Skip saving for smoke tests or empty results
+        should_save = save_to_file is True and len(self.weekly_results) > 0
+        
+        if should_save:
+            # Save report to JSON file
+            # Get backend directory (2 levels up from app/services/backtest.py)
+            backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            reports_dir = os.path.join(backend_dir, 'reports')
+            os.makedirs(reports_dir, exist_ok=True)
+            
+            # Create filename with timestamp
+            timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"backtest_report_{self.season}_{timestamp_str}.json"
+            filepath = os.path.join(reports_dir, filename)
+            
+            # Convert numpy types to native Python types for JSON serialization
+            def convert_to_serializable(obj):
+                if isinstance(obj, (np.integer, np.int64)):
+                    return int(obj)
+                elif isinstance(obj, (np.floating, np.float64)):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {k: convert_to_serializable(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_to_serializable(item) for item in obj]
+                return obj
+            
+            serializable_report = convert_to_serializable(report)
+            
+            with open(filepath, 'w') as f:
+                json.dump(serializable_report, f, indent=2)
+            
+            logger.info(f"Report saved to: {filepath}")
+        elif not save_to_file:
+            logger.info("Report generation successful (file save skipped for test)")
+        elif len(self.weekly_results) == 0:
+            logger.info("Report generation successful (file save skipped - no results)")
+        
+        return report
+    
+    def save_report_to_database(self, report: Dict, model_version: str = "5.0.0") -> Optional[int]:
+        """
+        Save backtest summary to database.
+        
+        Args:
+            report: Report dictionary from _generate_report
+            model_version: Model version string (default: "5.0.0")
+        
+        Returns:
+            ID of saved BacktestSummary record, or None if error
+        """
+        try:
+            from app.models import BacktestSummary
+            
+            db = SessionLocal()
+            try:
+                overall_metrics = report.get('overall_metrics', {})
+                
+                # Check if summary already exists for this model_version
+                existing = db.query(BacktestSummary).filter(
+                    BacktestSummary.model_version == model_version
+                ).first()
+                
+                summary_data = {
+                    'model_version': model_version,
+                    'methodology': report.get('methodology', 'expanding_window'),
+                    'season': report.get('season', self.season),
+                    'total_weeks_tested': report.get('total_weeks_tested', 0),
+                    'overall_rmse': overall_metrics.get('rmse', 0.0),
+                    'overall_mae': overall_metrics.get('mae', 0.0),
+                    'overall_spearman_corr': overall_metrics.get('spearman', 0.0),
+                    'r_squared': overall_metrics.get('r_squared', 0.0),
+                    'total_predictions': sum(r.get('n_predictions', 0) for r in report.get('weekly_results', []))
+                }
+                
+                if existing:
+                    # Update existing record
+                    for key, value in summary_data.items():
+                        setattr(existing, key, value)
+                    summary_id = existing.id
+                    logger.info(f"Updated BacktestSummary record ID: {summary_id}")
+                else:
+                    # Create new record
+                    summary = BacktestSummary(**summary_data)
+                    db.add(summary)
+                    db.commit()
+                    db.refresh(summary)
+                    summary_id = summary.id
+                    logger.info(f"Created BacktestSummary record ID: {summary_id}")
+                
+                return summary_id
+                
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.error(f"Error saving report to database: {str(e)}")
+            return None
+    
+    def _manage_memory(self):
+        """
+        Manage memory usage to stay within 4GB limit.
+        """
+        gc.collect()
+        
+        # Check memory usage (if psutil available)
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            
+            if memory_mb > self.memory_limit_mb:
+                logger.warning(f"Memory usage high: {memory_mb:.2f} MB")
+                # Force garbage collection
+                gc.collect()
+        except ImportError:
+            # psutil not available, just do basic cleanup
+            pass
+    
+    def generate_graphical_summary(
+        self,
+        report: Dict,
+        output_dir: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Generate graphical summary of backtest results.
+        
+        Args:
+            report: Backtest report dictionary
+            output_dir: Output directory for graphs (default: temp_dir)
+        
+        Returns:
+            Dictionary with paths to generated graphs
+        """
+        try:
+            import matplotlib
+            matplotlib.use('Agg')  # Non-interactive backend
+            import matplotlib.pyplot as plt
+        except ImportError:
+            logger.warning("matplotlib not available, skipping graphical summary")
+            return {}
+        
+        output_dir = output_dir or self.temp_dir
+        os.makedirs(output_dir, exist_ok=True)
+        
+        graph_paths = {}
+        
+        # 1. Weekly RMSE plot
+        if self.weekly_results:
+            gameweeks = [r['gameweek'] for r in self.weekly_results]
+            rmses = [r['rmse'] for r in self.weekly_results]
+            
+            plt.figure(figsize=(12, 6))
+            plt.plot(gameweeks, rmses, marker='o')
+            plt.xlabel('Gameweek')
+            plt.ylabel('RMSE')
+            plt.title(f'RMSE by Gameweek - Season {self.season}')
+            plt.grid(True)
+            
+            rmse_path = os.path.join(output_dir, f'rmse_gw_{self.season}.png')
+            plt.savefig(rmse_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            graph_paths['rmse_plot'] = rmse_path
+        
+        # 2. Predicted vs Actual scatter plot
+        if self.weekly_results:
+            predicted = [r['predicted_points'] for r in self.weekly_results]
+            actual = [r['actual_points'] for r in self.weekly_results]
+            
+            plt.figure(figsize=(10, 10))
+            plt.scatter(actual, predicted, alpha=0.6)
+            plt.plot([min(actual), max(actual)], [min(actual), max(actual)], 'r--', lw=2)
+            plt.xlabel('Actual Points')
+            plt.ylabel('Predicted Points')
+            plt.title(f'Predicted vs Actual Points - Season {self.season}')
+            plt.grid(True)
+            
+            scatter_path = os.path.join(output_dir, f'pred_vs_actual_{self.season}.png')
+            plt.savefig(scatter_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            graph_paths['scatter_plot'] = scatter_path
+        
+        # 3. Cumulative points plot (if solver used)
+        if any(r.get('net_points') for r in self.weekly_results):
+            gameweeks = [r['gameweek'] for r in self.weekly_results]
+            cumulative = []
+            running_total = 0.0
+            for r in self.weekly_results:
+                running_total += r.get('net_points', 0.0)
+                cumulative.append(running_total)
+            
+            plt.figure(figsize=(12, 6))
+            plt.plot(gameweeks, cumulative, marker='o', linewidth=2)
+            plt.xlabel('Gameweek')
+            plt.ylabel('Cumulative Points')
+            plt.title(f'Cumulative Points - Season {self.season}')
+            plt.grid(True)
+            
+            cum_path = os.path.join(output_dir, f'cumulative_points_{self.season}.png')
+            plt.savefig(cum_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            graph_paths['cumulative_plot'] = cum_path
+        
+        logger.info(f"Generated {len(graph_paths)} graphical summaries in {output_dir}")
+        
+        return graph_paths
+    
+    def _get_position_from_data(self, player_data: Dict) -> str:
+        """
+        Get position from player data.
+        
+        Args:
+            player_data: Player data dictionary
+        
+        Returns:
+            Position string (GK, DEF, MID, FWD)
+        """
+        # Try to get from element_type if available
+        element_type = player_data.get('element_type')
+        if element_type:
+            position_map = {1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}
+            return position_map.get(element_type, 'MID')
+        
+        # Try to get from position field
+        position = player_data.get('position', 'MID')
+        if isinstance(position, str) and position in ['GK', 'DEF', 'MID', 'FWD']:
+            return position
+        
+        # Default to MID
+        return 'MID'

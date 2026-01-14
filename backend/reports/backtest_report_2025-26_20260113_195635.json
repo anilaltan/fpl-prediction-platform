@@ -1,0 +1,196 @@
+{
+  "season": "2025-26",
+  "methodology": "expanding_window",
+  "min_train_weeks": 5,
+  "total_weeks_tested": 16,
+  "overall_metrics": {
+    "rmse": 22.319625131250962,
+    "mae": 18.980898773755598,
+    "spearman": 0.36176470588235293,
+    "r_squared": -2.5872524119121767,
+    "mean_actual": 19.4375,
+    "mean_predicted": 0.45660122624440075,
+    "n_weeks": 16,
+    "cumulative_points": 0.0,
+    "total_transfer_cost": 0
+  },
+  "weekly_results": [
+    {
+      "gameweek": 6,
+      "predicted_points": 1.1798593585182995,
+      "actual_points": 20,
+      "rmse": 2.3891462061320166,
+      "spearman": 0.7955879616954453,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 7,
+      "predicted_points": 0.5776631112941328,
+      "actual_points": 39,
+      "rmse": 2.4953317642231574,
+      "spearman": 0.77406309430436,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 8,
+      "predicted_points": 0.454839452755207,
+      "actual_points": 36,
+      "rmse": 2.6993927406073466,
+      "spearman": 0.7911852401168643,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 9,
+      "predicted_points": 0.24128094351153148,
+      "actual_points": 29,
+      "rmse": 2.611499256770239,
+      "spearman": 0.7876046179421753,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 10,
+      "predicted_points": 0.57549506639172,
+      "actual_points": 37,
+      "rmse": 2.5470858749669842,
+      "spearman": 0.7982332973258126,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 11,
+      "predicted_points": 0.1968999194493871,
+      "actual_points": 4,
+      "rmse": 2.702519302339184,
+      "spearman": 0.7910428471237312,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 12,
+      "predicted_points": 0.7172843561807875,
+      "actual_points": 12,
+      "rmse": 2.6634193957711996,
+      "spearman": 0.7652979389898147,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 13,
+      "predicted_points": 0.36680047193845056,
+      "actual_points": 5,
+      "rmse": 2.5177080579176607,
+      "spearman": 0.764424710088053,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 14,
+      "predicted_points": 0.3726588345078529,
+      "actual_points": 28,
+      "rmse": 2.7187641023991658,
+      "spearman": 0.8182854674308607,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 15,
+      "predicted_points": 0.8187928330527157,
+      "actual_points": 8,
+      "rmse": 2.5889384553355117,
+      "spearman": 0.7750296439212775,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 16,
+      "predicted_points": 0.26914888155851296,
+      "actual_points": 7,
+      "rmse": 2.6778895204916937,
+      "spearman": 0.7739078411309047,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 17,
+      "predicted_points": 0.46043634229903435,
+      "actual_points": 25,
+      "rmse": 2.5401179308644934,
+      "spearman": 0.7581989266949862,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 18,
+      "predicted_points": 0.10407403180858964,
+      "actual_points": 6,
+      "rmse": 2.49300338428446,
+      "spearman": 0.8108353238661763,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 19,
+      "predicted_points": 0.46142738863599947,
+      "actual_points": 15,
+      "rmse": 2.5893765843105565,
+      "spearman": 0.8108133294182227,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 20,
+      "predicted_points": 0.23121845978771266,
+      "actual_points": 14,
+      "rmse": 2.5068761542626388,
+      "spearman": 0.792563234395005,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 21,
+      "predicted_points": 0.27774016822047876,
+      "actual_points": 26,
+      "rmse": 2.4326080129808636,
+      "spearman": 0.7966291694461208,
+      "n_predictions": 0,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    }
+  ],
+  "timestamp": "2026-01-13T19:56:35.836679"
+}

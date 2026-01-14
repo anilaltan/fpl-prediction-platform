@@ -1,0 +1,292 @@
+{
+  "season": "2025-26",
+  "methodology": "expanding_window",
+  "min_train_weeks": 5,
+  "total_weeks_tested": 16,
+  "overall_metrics": {
+    "rmse": 22.571796718439725,
+    "mae": 19.24137283410385,
+    "spearman": -0.05294117647058824,
+    "r_squared": -2.6687693121778007,
+    "mean_actual": 19.4375,
+    "mean_predicted": 0.19612716589614865,
+    "n_weeks": 16,
+    "cumulative_points": 475.8932555120398,
+    "total_transfer_cost": 0
+  },
+  "weekly_results": [
+    {
+      "gameweek": 6,
+      "predicted_points": 0.44274419756484124,
+      "actual_points": 20,
+      "rmse": 2.414580894921812,
+      "spearman": 0.676057050017808,
+      "n_predictions": 0,
+      "net_points": 44.07976314623732,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 44.07976314623732,
+        "transfer_cost": 0,
+        "net_points": 44.07976314623732,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 7,
+      "predicted_points": 0.40069087184811175,
+      "actual_points": 39,
+      "rmse": 2.518541708270388,
+      "spearman": 0.614489814171177,
+      "n_predictions": 0,
+      "net_points": 35.62173592721976,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 35.62173592721976,
+        "transfer_cost": 0,
+        "net_points": 35.62173592721976,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 8,
+      "predicted_points": 0.0770025965387207,
+      "actual_points": 36,
+      "rmse": 2.741205866379792,
+      "spearman": 0.6622879066919574,
+      "n_predictions": 0,
+      "net_points": 23.893553361199054,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 23.893553361199054,
+        "transfer_cost": 0,
+        "net_points": 23.893553361199054,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 9,
+      "predicted_points": 0.044395327070172755,
+      "actual_points": 29,
+      "rmse": 2.629964000073343,
+      "spearman": 0.643473756976623,
+      "n_predictions": 0,
+      "net_points": 28.70336837654257,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 28.70336837654257,
+        "transfer_cost": 0,
+        "net_points": 28.70336837654257,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 10,
+      "predicted_points": 0.042861525437495405,
+      "actual_points": 37,
+      "rmse": 2.596018780108229,
+      "spearman": 0.6468273895907922,
+      "n_predictions": 0,
+      "net_points": 22.358420141299604,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 22.358420141299604,
+        "transfer_cost": 0,
+        "net_points": 22.358420141299604,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 11,
+      "predicted_points": 0.11068890489403932,
+      "actual_points": 4,
+      "rmse": 2.722326952193513,
+      "spearman": 0.6583337387528462,
+      "n_predictions": 0,
+      "net_points": 24.99524865278404,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 24.99524865278404,
+        "transfer_cost": 0,
+        "net_points": 24.99524865278404,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 12,
+      "predicted_points": 0.20405292793830004,
+      "actual_points": 12,
+      "rmse": 2.7018724778466665,
+      "spearman": 0.6556601920238333,
+      "n_predictions": 0,
+      "net_points": 28.808049163367265,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 28.808049163367265,
+        "transfer_cost": 0,
+        "net_points": 28.808049163367265,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 13,
+      "predicted_points": 0.12267375748667134,
+      "actual_points": 5,
+      "rmse": 2.5394919332737502,
+      "spearman": 0.6598988380162477,
+      "n_predictions": 0,
+      "net_points": 31.5361072670497,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 31.5361072670497,
+        "transfer_cost": 0,
+        "net_points": 31.5361072670497,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 14,
+      "predicted_points": 0.31592521604814405,
+      "actual_points": 28,
+      "rmse": 2.7448850601724746,
+      "spearman": 0.6811017316890071,
+      "n_predictions": 0,
+      "net_points": 26.93539884902694,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 26.93539884902694,
+        "transfer_cost": 0,
+        "net_points": 26.93539884902694,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 15,
+      "predicted_points": 0.8031307620755024,
+      "actual_points": 8,
+      "rmse": 2.6152823348271,
+      "spearman": 0.655582405490687,
+      "n_predictions": 0,
+      "net_points": 33.310302748605224,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 33.310302748605224,
+        "transfer_cost": 0,
+        "net_points": 33.310302748605224,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 16,
+      "predicted_points": 0.09040506481096094,
+      "actual_points": 7,
+      "rmse": 2.7003333126711686,
+      "spearman": 0.6372988510681202,
+      "n_predictions": 0,
+      "net_points": 29.59110861593438,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 29.59110861593438,
+        "transfer_cost": 0,
+        "net_points": 29.59110861593438,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 17,
+      "predicted_points": 0.12335730211559608,
+      "actual_points": 25,
+      "rmse": 2.551754390537353,
+      "spearman": 0.6400779634080886,
+      "n_predictions": 0,
+      "net_points": 37.095271117524476,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 37.095271117524476,
+        "transfer_cost": 0,
+        "net_points": 37.095271117524476,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 18,
+      "predicted_points": 0.047311022169048415,
+      "actual_points": 6,
+      "rmse": 2.5196025197716723,
+      "spearman": 0.6783740785465491,
+      "n_predictions": 0,
+      "net_points": 24.867359297473214,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 24.867359297473214,
+        "transfer_cost": 0,
+        "net_points": 24.867359297473214,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 19,
+      "predicted_points": 0.20916874964111232,
+      "actual_points": 15,
+      "rmse": 2.606722554803857,
+      "spearman": 0.6895145300614252,
+      "n_predictions": 0,
+      "net_points": 35.962485139140504,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 35.962485139140504,
+        "transfer_cost": 0,
+        "net_points": 35.962485139140504,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 20,
+      "predicted_points": 0.04132993373531431,
+      "actual_points": 14,
+      "rmse": 2.5285556023928755,
+      "spearman": 0.6774336928601563,
+      "n_predictions": 0,
+      "net_points": 25.05535345098058,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 25.05535345098058,
+        "transfer_cost": 0,
+        "net_points": 25.05535345098058,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    },
+    {
+      "gameweek": 21,
+      "predicted_points": 0.06229649496434768,
+      "actual_points": 26,
+      "rmse": 2.4716067256053003,
+      "spearman": 0.6719213228201442,
+      "n_predictions": 0,
+      "net_points": 23.07973025765518,
+      "transfer_cost": 0,
+      "solver_result": {
+        "total_points": 23.07973025765518,
+        "transfer_cost": 0,
+        "net_points": 23.07973025765518,
+        "squad_size": 15,
+        "starting_xi_size": 11
+      }
+    }
+  ],
+  "timestamp": "2026-01-14T07:53:36.913233"
+}
