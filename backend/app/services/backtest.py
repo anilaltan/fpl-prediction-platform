@@ -313,19 +313,53 @@ class BacktestEngine:
                 attack_xa_labels=attack_xa_labels
             )
             
+            # 4. Calculate historical averages for each player from training data (CRITICAL FIX)
+            # For GW prediction, we should NOT use the current week's stats (which would be unknown)
+            # Instead, use historical averages from previous gameweeks
+            logger.info("Calculating historical averages for prediction...")
+            player_historical_stats = self._calculate_player_historical_stats(training_data)
+            
             # Cleanup training data
             del training_data
             gc.collect()
             
-            # 4. Make predictions for current week
+            # 5. Make predictions for current week using HISTORICAL data
             logger.info("Making predictions...")
             predictions = []
             actual_points = []
             
             for _, row in current_data.iterrows():
-                player_data = row.to_dict()
+                # Current week data is only for validation (actual_points)
+                current_week_data = row.to_dict()
+                fpl_id = current_week_data.get('fpl_id')
                 
-                # Get prediction
+                # CRITICAL FIX: Use historical averages, NOT current week stats
+                # Get historical stats for this player from previous gameweeks
+                if fpl_id in player_historical_stats:
+                    player_data = player_historical_stats[fpl_id].copy()
+                    # Add position and other metadata from current week
+                    player_data['position'] = current_week_data.get('position', 'MID')
+                    player_data['price'] = current_week_data.get('price', 5.0)
+                    player_data['fpl_id'] = fpl_id
+                    player_data['status'] = current_week_data.get('status', 'a')
+                else:
+                    # New player with no history - use minimal defaults
+                    player_data = {
+                        'fpl_id': fpl_id,
+                        'position': current_week_data.get('position', 'MID'),
+                        'price': current_week_data.get('price', 5.0),
+                        'status': current_week_data.get('status', 'a'),
+                        'xg_per_90': 0.0,
+                        'xa_per_90': 0.0,
+                        'goals_per_90': 0.0,
+                        'assists_per_90': 0.0,
+                        'minutes': 0,
+                        'recent_minutes': [],
+                        'recent_xg': [],
+                        'recent_xa': []
+                    }
+                
+                # Get prediction using historical data
                 try:
                     prediction = self.plengine.predict(
                         player_data=player_data,
@@ -333,11 +367,12 @@ class BacktestEngine:
                     )
                     pred_points = prediction.get('expected_points', 0.0)
                     predictions.append(pred_points)
-                    actual_points.append(player_data.get('total_points', 0))
+                    # Actual points come from current week's REAL data (for validation only)
+                    actual_points.append(current_week_data.get('total_points', 0))
                 except Exception as e:
-                    logger.warning(f"Prediction error for player {player_data.get('fpl_id')}: {str(e)}")
+                    logger.warning(f"Prediction error for player {fpl_id}: {str(e)}")
                     predictions.append(0.0)
-                    actual_points.append(player_data.get('total_points', 0))
+                    actual_points.append(current_week_data.get('total_points', 0))
             
             # 5. Calculate metrics
             rmse = np.sqrt(mean_squared_error(actual_points, predictions))
@@ -364,6 +399,9 @@ class BacktestEngine:
             predicted_points = sum(predictions[:11]) if len(predictions) >= 11 else sum(predictions)
             actual_team_points = sum(actual_points[:11]) if len(actual_points) >= 11 else sum(actual_points)
             
+            # Save prediction count BEFORE cleanup
+            n_predictions = len(predictions)
+            
             # Cleanup
             del current_data
             del predictions
@@ -380,7 +418,7 @@ class BacktestEngine:
                 'actual_points': actual_team_points,
                 'rmse': rmse,
                 'spearman': spearman_corr,
-                'n_predictions': len(predictions) if 'predictions' in locals() else 0,
+                'n_predictions': n_predictions,
                 'net_points': net_points,
                 'transfer_cost': transfer_cost,
                 'solver_result': solver_result
@@ -600,11 +638,11 @@ class BacktestEngine:
             injury_status_map = {'a': 0, 'd': 1, 'i': 2, 'n': 0, 's': 2}
             injury_status = float(injury_status_map.get(status, 0))
             
-            # 4. recent_minutes_avg / 90.0
+            # 4. recent_minutes_avg / 90.0 (safe handling for empty lists)
             if len(prev_matches) > 0:
                 recent_minutes = prev_matches['minutes'].tail(3).tolist()
                 recent_minutes = [m for m in recent_minutes if m > 0]  # Filter zeros
-                if recent_minutes:
+                if recent_minutes and len(recent_minutes) > 0:
                     recent_minutes_avg = float(np.mean(recent_minutes)) / 90.0
                 else:
                     recent_minutes_avg = 0.5  # Default: 45 minutes
@@ -648,6 +686,11 @@ class BacktestEngine:
         """
         Prepare features for Attack model (xG/xA).
         
+        CRITICAL FIX: Avoid target leakage!
+        - For each row (GW N), use player's average stats from GW 1 to N-1 as FEATURES
+        - Use GW N's actual xG/xA as TARGETS (labels)
+        - This prevents the model from "learning" to predict xG using xG itself
+        
         Args:
             training_data: Training DataFrame
         
@@ -678,39 +721,137 @@ class BacktestEngine:
             logger.warning("plengine is None, creating new AttackModel instance")
             attack_model = AttackModel()
 
-        for _, row in training_data.iterrows():
-            player_data = row.to_dict()
-
-            # Provide sensible per-90 fallbacks for training rows (AttackModel.extract_features prefers *_per_90 keys)
-            minutes = float(player_data.get('minutes', 0) or 0)
-            minutes_scale = 90.0 / max(minutes, 1.0)
-
-            # Use training row xg/xa/goals/assists as proxies
-            if 'xg_per_90' not in player_data:
-                player_data['xg_per_90'] = float(player_data.get('xg', 0.0)) * minutes_scale
-            if 'xa_per_90' not in player_data:
-                player_data['xa_per_90'] = float(player_data.get('xa', 0.0)) * minutes_scale
-            if 'goals_per_90' not in player_data:
-                player_data['goals_per_90'] = float(player_data.get('goals', 0.0)) * minutes_scale
-            if 'assists_per_90' not in player_data:
-                player_data['assists_per_90'] = float(player_data.get('assists', 0.0)) * minutes_scale
-
-            # Use `was_home` to build minimal fixture context
-            fixture_data = {'is_home': bool(player_data.get('was_home', True))}
-
-            # Generate features using the same method used at prediction time
-            feature_arr = attack_model.extract_features(
-                player_data=player_data,
-                fixture_data=fixture_data,
-                fdr_data=None,
-                opponent_data=None,
-            )
-            features.append(feature_arr.flatten().tolist())
-
-            # Labels are the realized xG/xA for that row
-            xg_labels.append(float(player_data.get('xg', 0.0)))
-            xa_labels.append(float(player_data.get('xa', 0.0)))
+        # CRITICAL FIX: Pre-calculate cumulative stats for each player up to each gameweek
+        # This avoids target leakage by using only PAST data for features
+        training_data_sorted = training_data.sort_values(['fpl_id', 'gameweek'])
         
+        # Build cumulative stats for each player
+        player_cumulative_stats = {}  # {fpl_id: {gameweek: {stats...}}}
+        
+        for fpl_id, player_group in training_data_sorted.groupby('fpl_id'):
+            player_group = player_group.sort_values('gameweek')
+            player_cumulative_stats[fpl_id] = {}
+            
+            cumulative_minutes = 0.0
+            cumulative_xg = 0.0
+            cumulative_xa = 0.0
+            cumulative_goals = 0.0
+            cumulative_assists = 0.0
+            recent_xg_list = []
+            recent_xa_list = []
+            recent_minutes_list = []
+            
+            for idx, (_, row) in enumerate(player_group.iterrows()):
+                current_gw = row.get('gameweek', 0)
+                
+                # Store stats BEFORE this gameweek (for prediction at this GW)
+                # These are the features we'd have available when predicting this GW
+                if cumulative_minutes > 0:
+                    xg_per_90 = (cumulative_xg / cumulative_minutes) * 90.0
+                    xa_per_90 = (cumulative_xa / cumulative_minutes) * 90.0
+                    goals_per_90 = (cumulative_goals / cumulative_minutes) * 90.0
+                    assists_per_90 = (cumulative_assists / cumulative_minutes) * 90.0
+                else:
+                    xg_per_90 = 0.0
+                    xa_per_90 = 0.0
+                    goals_per_90 = 0.0
+                    assists_per_90 = 0.0
+                
+                # Safe slicing to avoid empty slice warnings
+                recent_mins_slice = recent_minutes_list[-5:] if recent_minutes_list else []
+                recent_xg_slice = recent_xg_list[-5:] if recent_xg_list else []
+                recent_xa_slice = recent_xa_list[-5:] if recent_xa_list else []
+                
+                # Calculate expected minutes safely
+                if recent_mins_slice and len(recent_mins_slice) > 0:
+                    exp_mins = float(np.mean(recent_mins_slice))
+                else:
+                    exp_mins = 0.0
+                
+                player_cumulative_stats[fpl_id][current_gw] = {
+                    'xg_per_90': xg_per_90,
+                    'xa_per_90': xa_per_90,
+                    'goals_per_90': goals_per_90,
+                    'assists_per_90': assists_per_90,
+                    'minutes': cumulative_minutes,
+                    'recent_xg': recent_xg_slice.copy(),  # Last 5 GWs
+                    'recent_xa': recent_xa_slice.copy(),
+                    'recent_minutes': recent_mins_slice.copy(),
+                    'expected_minutes': exp_mins
+                }
+                
+                # Update cumulative stats AFTER storing (so next GW can use this)
+                row_minutes = float(row.get('minutes', 0) or 0)
+                row_xg = float(row.get('xg', 0) or 0)
+                row_xa = float(row.get('xa', 0) or 0)
+                row_goals = float(row.get('goals', 0) or 0)
+                row_assists = float(row.get('assists', 0) or 0)
+                
+                cumulative_minutes += row_minutes
+                cumulative_xg += row_xg
+                cumulative_xa += row_xa
+                cumulative_goals += row_goals
+                cumulative_assists += row_assists
+                
+                recent_xg_list.append(row_xg)
+                recent_xa_list.append(row_xa)
+                recent_minutes_list.append(row_minutes)
+
+        # Now build features using HISTORICAL stats (no leakage)
+        skipped_rows = 0
+        for _, row in training_data_sorted.iterrows():
+            fpl_id = row.get('fpl_id')
+            current_gw = row.get('gameweek', 0)
+            
+            # Get historical stats for this player BEFORE this gameweek
+            if fpl_id in player_cumulative_stats and current_gw in player_cumulative_stats[fpl_id]:
+                historical = player_cumulative_stats[fpl_id][current_gw]
+                
+                # Skip if no historical data (first gameweek for this player)
+                if historical['minutes'] == 0 and not historical['recent_xg']:
+                    skipped_rows += 1
+                    continue
+                
+                # Build player_data dict using HISTORICAL stats (not current row's stats)
+                player_data = {
+                    'fpl_id': fpl_id,
+                    'position': row.get('position', 'MID'),
+                    'xg_per_90': historical['xg_per_90'],
+                    'xa_per_90': historical['xa_per_90'],
+                    'goals_per_90': historical['goals_per_90'],
+                    'assists_per_90': historical['assists_per_90'],
+                    'minutes': historical['minutes'],
+                    'expected_minutes': historical['expected_minutes'],
+                    'recent_xg': historical['recent_xg'],
+                    'recent_xa': historical['recent_xa'],
+                    'recent_minutes': historical['recent_minutes'],
+                    'form': row.get('total_points', 0) / 10.0 if 'total_points' in row else 0.0,
+                    'team_attack_strength': 0.0  # Default
+                }
+                
+                # Use `was_home` to build minimal fixture context
+                fixture_data = {'is_home': bool(row.get('was_home', True))}
+                
+                # Generate features using HISTORICAL data (no leakage!)
+                feature_arr = attack_model.extract_features(
+                    player_data=player_data,
+                    fixture_data=fixture_data,
+                    fdr_data=None,
+                    opponent_data=None,
+                )
+                features.append(feature_arr.flatten().tolist())
+                
+                # Labels are the CURRENT row's xG/xA (what we want to predict)
+                xg_labels.append(float(row.get('xg', 0.0)))
+                xa_labels.append(float(row.get('xa', 0.0)))
+            else:
+                # No historical data, skip this row
+                skipped_rows += 1
+        
+        if skipped_rows > 0:
+            logger.info(f"Skipped {skipped_rows} rows with no historical data (first GW for those players)")
+        
+        logger.info(f"Prepared {len(features)} attack features without target leakage")
         return np.array(features), np.array(xg_labels), np.array(xa_labels)
     
     def _run_solver_for_week(
@@ -808,27 +949,54 @@ class BacktestEngine:
             all_predicted.append(result.get('predicted_points', 0.0))
             all_actual.append(result.get('actual_points', 0.0))
         
+        # Convert to numpy arrays for safe operations
+        all_predicted_arr = np.array(all_predicted)
+        all_actual_arr = np.array(all_actual)
+        
+        # Safe checks for empty arrays (prevents 'Mean of empty slice' warnings)
+        if len(all_predicted_arr) == 0 or len(all_actual_arr) == 0:
+            return {
+                'rmse': 0.0,
+                'mae': 0.0,
+                'spearman': 0.0,
+                'r_squared': 0.0,
+                'mean_actual': 0.0,
+                'mean_predicted': 0.0,
+                'n_weeks': 0,
+                'cumulative_points': self.cumulative_points,
+                'total_transfer_cost': self.total_transfer_cost
+            }
+        
         # Calculate overall RMSE
-        rmse = np.sqrt(mean_squared_error(all_actual, all_predicted))
+        rmse = np.sqrt(mean_squared_error(all_actual_arr, all_predicted_arr))
         
-        # Calculate overall Spearman correlation
-        spearman_corr, _ = spearmanr(all_actual, all_predicted)
+        # Calculate overall Spearman correlation (handle edge cases)
+        if len(all_actual_arr) >= 2:
+            spearman_corr, _ = spearmanr(all_actual_arr, all_predicted_arr)
+            # Handle NaN from spearmanr
+            if np.isnan(spearman_corr):
+                spearman_corr = 0.0
+        else:
+            spearman_corr = 0.0
         
-        # Calculate MAE
-        mae = np.mean(np.abs(np.array(all_actual) - np.array(all_predicted)))
+        # Calculate MAE safely
+        mae = float(np.mean(np.abs(all_actual_arr - all_predicted_arr)))
         
-        # Calculate R-squared
-        ss_res = np.sum((np.array(all_actual) - np.array(all_predicted)) ** 2)
-        ss_tot = np.sum((np.array(all_actual) - np.mean(all_actual)) ** 2)
+        # Calculate R-squared safely
+        mean_actual = float(np.mean(all_actual_arr))
+        mean_predicted = float(np.mean(all_predicted_arr))
+        
+        ss_res = np.sum((all_actual_arr - all_predicted_arr) ** 2)
+        ss_tot = np.sum((all_actual_arr - mean_actual) ** 2)
         r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
         
         return {
-            'rmse': rmse,
-            'mae': mae,
-            'spearman': spearman_corr,
-            'r_squared': r_squared,
-            'mean_actual': np.mean(all_actual),
-            'mean_predicted': np.mean(all_predicted),
+            'rmse': float(rmse),
+            'mae': float(mae),
+            'spearman': float(spearman_corr),
+            'r_squared': float(r_squared),
+            'mean_actual': mean_actual,
+            'mean_predicted': mean_predicted,
             'n_weeks': len(self.weekly_results),
             'cumulative_points': self.cumulative_points,
             'total_transfer_cost': self.total_transfer_cost
@@ -1064,6 +1232,90 @@ class BacktestEngine:
         logger.info(f"Generated {len(graph_paths)} graphical summaries in {output_dir}")
         
         return graph_paths
+    
+    def _calculate_player_historical_stats(self, training_data: pd.DataFrame) -> Dict[int, Dict]:
+        """
+        Calculate historical average stats for each player from training data.
+        
+        This is the CRITICAL fix for backtest data aggregation:
+        When predicting GW20, we should use GW1-19 averages, NOT GW20's actual stats.
+        
+        Args:
+            training_data: DataFrame with all previous gameweeks' data
+        
+        Returns:
+            Dictionary mapping fpl_id -> historical stats dict with:
+            - xg_per_90, xa_per_90, goals_per_90, assists_per_90
+            - recent_xg (last 5 GWs), recent_xa (last 5 GWs), recent_minutes (last 5 GWs)
+            - total_minutes, form
+        """
+        player_stats = {}
+        
+        if training_data.empty:
+            return player_stats
+        
+        # Sort by gameweek to get proper ordering for recency
+        training_data_sorted = training_data.sort_values(['fpl_id', 'gameweek'])
+        
+        # Group by player
+        for fpl_id, player_group in training_data_sorted.groupby('fpl_id'):
+            # Sort by gameweek (most recent last)
+            player_group = player_group.sort_values('gameweek')
+            
+            # Calculate total stats
+            total_minutes = float(player_group['minutes'].sum())
+            total_xg = float(player_group['xg'].sum()) if 'xg' in player_group.columns else 0.0
+            total_xa = float(player_group['xa'].sum()) if 'xa' in player_group.columns else 0.0
+            total_goals = float(player_group['goals'].sum()) if 'goals' in player_group.columns else 0.0
+            total_assists = float(player_group['assists'].sum()) if 'assists' in player_group.columns else 0.0
+            
+            # Calculate per-90 stats (avoid division by zero)
+            if total_minutes > 0:
+                xg_per_90 = (total_xg / total_minutes) * 90.0
+                xa_per_90 = (total_xa / total_minutes) * 90.0
+                goals_per_90 = (total_goals / total_minutes) * 90.0
+                assists_per_90 = (total_assists / total_minutes) * 90.0
+            else:
+                xg_per_90 = 0.0
+                xa_per_90 = 0.0
+                goals_per_90 = 0.0
+                assists_per_90 = 0.0
+            
+            # Get recent stats (last 5 gameweeks)
+            recent_rows = player_group.tail(5)
+            recent_minutes = recent_rows['minutes'].tolist()
+            recent_xg = recent_rows['xg'].tolist() if 'xg' in recent_rows.columns else []
+            recent_xa = recent_rows['xa'].tolist() if 'xa' in recent_rows.columns else []
+            
+            # Calculate form (average total_points in last 5 GWs)
+            if 'total_points' in recent_rows.columns:
+                form = float(recent_rows['total_points'].mean())
+            else:
+                form = 0.0
+            
+            # Store stats
+            # Calculate expected minutes safely (avoid empty list warnings)
+            valid_recent_minutes = [m for m in recent_minutes if m > 0]
+            expected_mins = float(np.mean(valid_recent_minutes)) if valid_recent_minutes else 0.0
+            
+            player_stats[fpl_id] = {
+                'xg_per_90': xg_per_90,
+                'xa_per_90': xa_per_90,
+                'goals_per_90': goals_per_90,
+                'assists_per_90': assists_per_90,
+                'minutes': total_minutes,
+                'expected_minutes': expected_mins,
+                'recent_minutes': recent_minutes,
+                'recent_xg': recent_xg,
+                'recent_xa': recent_xa,
+                'form': form,
+                'total_xg': total_xg,
+                'total_xa': total_xa,
+                'games_played': len(player_group[player_group['minutes'] > 0])
+            }
+        
+        logger.info(f"Calculated historical stats for {len(player_stats)} players")
+        return player_stats
     
     def _get_position_from_data(self, player_data: Dict) -> str:
         """

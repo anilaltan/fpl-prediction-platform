@@ -1,0 +1,53 @@
+{
+  "season": "2025-26",
+  "methodology": "expanding_window",
+  "min_train_weeks": 5,
+  "total_weeks_tested": 3,
+  "overall_metrics": {
+    "rmse": 19.983711695615145,
+    "mae": 18.408256872190083,
+    "spearman": 1.0,
+    "r_squared": -4.741435460385287,
+    "mean_actual": 31.666666666666668,
+    "mean_predicted": 13.258409794476583,
+    "n_weeks": 3,
+    "cumulative_points": 0.0,
+    "total_transfer_cost": 0
+  },
+  "weekly_results": [
+    {
+      "gameweek": 6,
+      "predicted_points": 12.534420363918926,
+      "actual_points": 20,
+      "rmse": 1.9587178842538513,
+      "spearman": 0.6328404585882204,
+      "n_predictions": 742,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 7,
+      "predicted_points": 14.160936286647267,
+      "actual_points": 39,
+      "rmse": 1.9760451440606652,
+      "spearman": 0.643684781436743,
+      "n_predictions": 743,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    },
+    {
+      "gameweek": 8,
+      "predicted_points": 13.079872732863551,
+      "actual_points": 36,
+      "rmse": 2.223170318340959,
+      "spearman": 0.6375100512878105,
+      "n_predictions": 745,
+      "net_points": 0.0,
+      "transfer_cost": 0,
+      "solver_result": null
+    }
+  ],
+  "timestamp": "2026-01-14T09:50:18.714900"
+}

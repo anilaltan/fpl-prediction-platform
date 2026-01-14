@@ -125,10 +125,11 @@ class XMinsModel:
         status = player_data.get('status', 'a').lower()
         injury_status = injury_status_map.get(status, 0)
         
-        # Recent minutes average
+        # Recent minutes average (safe handling for empty lists)
         recent_minutes = player_data.get('recent_minutes', [])
-        if recent_minutes:
-            recent_minutes_avg = np.mean(recent_minutes[:3]) if len(recent_minutes) >= 3 else np.mean(recent_minutes)
+        if recent_minutes and len(recent_minutes) > 0:
+            slice_mins = recent_minutes[:3] if len(recent_minutes) >= 3 else recent_minutes
+            recent_minutes_avg = float(np.mean(slice_mins)) if len(slice_mins) > 0 else 90.0
         else:
             recent_minutes_avg = player_data.get('minutes_per_game', 90.0)
         
@@ -185,10 +186,11 @@ class XMinsModel:
             Probability between 0 and 1
         """
         if not self.is_trained:
-            # Default prediction based on recent minutes
+            # Default prediction based on recent minutes (safe handling for empty lists)
             recent_minutes = player_data.get('recent_minutes', [])
-            if recent_minutes:
-                avg_minutes = np.mean(recent_minutes[:3]) if len(recent_minutes) >= 3 else np.mean(recent_minutes)
+            if recent_minutes and len(recent_minutes) > 0:
+                slice_mins = recent_minutes[:3] if len(recent_minutes) >= 3 else recent_minutes
+                avg_minutes = float(np.mean(slice_mins)) if len(slice_mins) > 0 else 63.0
                 return min(1.0, avg_minutes / 90.0)
             return 0.7  # Default
         
@@ -213,9 +215,10 @@ class XMinsModel:
         """
         p_start = self.predict_start_probability(player_data, fixture_data)
         
-        # If starting, estimate minutes based on recent average
+        # If starting, estimate minutes based on recent average (safe handling for empty lists)
         recent_minutes = player_data.get('recent_minutes', [90])
-        avg_minutes_when_starting = np.mean([m for m in recent_minutes if m > 0]) if recent_minutes else 85.0
+        valid_minutes = [m for m in recent_minutes if m > 0] if recent_minutes else []
+        avg_minutes_when_starting = float(np.mean(valid_minutes)) if len(valid_minutes) > 0 else 85.0
         
         # Expected minutes = P(start) * avg_minutes_when_starting
         expected_minutes = p_start * avg_minutes_when_starting
@@ -310,11 +313,11 @@ class AttackModel:
         if assists_per_90 == 0.0 and 'assists' in player_data:
             assists_per_90 = float(player_data.get('assists', 0.0)) * per90_scale
         
-        # Recent form (last 5 games)
+        # Recent form (last 5 games) - safe handling for empty lists
         recent_xg = player_data.get('recent_xg', [])
         recent_xa = player_data.get('recent_xa', [])
-        recent_xg_avg = float(np.mean(recent_xg)) if recent_xg else xg_per_90
-        recent_xa_avg = float(np.mean(recent_xa)) if recent_xa else xa_per_90
+        recent_xg_avg = float(np.mean(recent_xg)) if recent_xg and len(recent_xg) > 0 else xg_per_90
+        recent_xa_avg = float(np.mean(recent_xa)) if recent_xa and len(recent_xa) > 0 else xa_per_90
         
         # OPPONENT xGC (Expected Goals Conceded) - KEY FEATURE for normalization
         if opponent_data:
@@ -414,12 +417,32 @@ class AttackModel:
         """
         Predict xG and xA for a player.
         Uses opponent xGC to adjust predictions.
+        Applies FDR scaling based on opponent defense strength.
         
         Returns:
             Dictionary with 'xg' and 'xa' predictions
         """
+        # Calculate FDR scaling multiplier based on opponent defense strength
+        # Weak defense (strength < 1.0) -> multiplier > 1.0 (easier to score)
+        # Strong defense (strength > 1.0) -> multiplier < 1.0 (harder to score)
+        fdr_multiplier = 1.0
+        if fdr_data:
+            opponent_defense = float(fdr_data.get('opponent_defense_strength', 0.0))
+            # Defense strength typically in range -1 to +1 or 0 to 2
+            # Normalize: if defense_strength > 0, it's a strong defense
+            if opponent_defense != 0:
+                # Linear scaling: defense_strength of -0.5 -> multiplier 1.15
+                # defense_strength of +0.5 -> multiplier 0.85
+                fdr_multiplier = 1.0 - (opponent_defense * 0.3)
+                fdr_multiplier = float(np.clip(fdr_multiplier, 0.7, 1.4))  # Clamp to reasonable range
+        elif opponent_data:
+            opponent_defense = float(opponent_data.get('defense_strength', 0.0))
+            if opponent_defense != 0:
+                fdr_multiplier = 1.0 - (opponent_defense * 0.3)
+                fdr_multiplier = float(np.clip(fdr_multiplier, 0.7, 1.4))
+        
         if not self.xg_trained or not self.xa_trained:
-            # Return default based on historical averages adjusted by opponent xGC
+            # Return default based on historical averages adjusted by opponent xGC and FDR
             base_xg = float(player_data.get('xg_per_90', 0.0))
             base_xa = float(player_data.get('xa_per_90', 0.0))
             
@@ -429,9 +452,13 @@ class AttackModel:
                 xgc_factor = opponent_xgc / 1.5  # Normalize to average
                 base_xg = base_xg * xgc_factor
             
+            # Apply FDR scaling
+            base_xg = base_xg * fdr_multiplier
+            base_xa = base_xa * fdr_multiplier
+            
             return {
-                'xg': base_xg,
-                'xa': base_xa
+                'xg': float(max(0.0, base_xg)),
+                'xa': float(max(0.0, base_xa))
             }
         
         features = self.extract_features(player_data, fixture_data, fdr_data, opponent_data)
@@ -439,6 +466,10 @@ class AttackModel:
         
         xg_pred = self.xg_model.predict(features_scaled)[0]
         xa_pred = self.xa_model.predict(features_scaled)[0]
+        
+        # Apply FDR scaling to predictions
+        xg_pred = xg_pred * fdr_multiplier
+        xa_pred = xa_pred * fdr_multiplier
         
         # Ensure non-negative
         xg_pred = max(0.0, xg_pred)
@@ -797,6 +828,8 @@ class PLEngine:
                 'goal_component': 0.0,
                 'assist_component': 0.0,
                 'cs_component': 0.0,
+                'appearance_points': 0.0,
+                'expected_bonus': 0.0,
                 'p_start': 0.0
             }
         
@@ -846,8 +879,31 @@ class PLEngine:
         assist_component = assist_points * xa
         cs_component = cs_points * xcs
         
-        # 7. Final xP calculation: xP = (xMins/90) * [components + DefCon]
-        xp = xmins_factor * (goal_component + assist_component + cs_component + defcon_points_90)
+        # 7. FPL Appearance Points (CRITICAL FIX)
+        # FPL Rules: +1 for 1-59 minutes, +2 for 60+ minutes
+        # Expected value calculation:
+        # - P(play any minutes) ≈ p_start (start probability)
+        # - P(play 60+ | play) ≈ based on average minutes when playing
+        # Simplified formula: (xMins/90) * 2 gives expected appearance points
+        # This correctly scales from 0 (no play) to 2 (full 90 minutes)
+        appearance_points = xmins_factor * 2.0
+        
+        # 8. Expected Bonus Points (xB)
+        # FPL awards 1-3 bonus points to top performers in each match based on BPS (Bonus Point System)
+        # BPS correlates heavily with goals, assists, and ICT index
+        # Formula: xB = (goal_component + assist_component) * 0.15 + (ict_index * 0.02)
+        # This typically yields 0.5-1.5 for top players
+        ict_index = float(player_data.get('ict_index', player_data.get('influence', 0)) or 0)
+        
+        # Calculate expected bonus based on attacking contributions and influence
+        expected_bonus = (goal_component + assist_component) * 0.15 + (ict_index * 0.02)
+        
+        # Clamp bonus to realistic range (0 to 3 max per game)
+        expected_bonus = float(np.clip(expected_bonus, 0.0, 3.0))
+        
+        # 9. Final xP calculation: xP = appearance + (xMins/90) * [components + DefCon + Bonus]
+        # Note: Components are scaled by xmins_factor (probability of playing)
+        xp = appearance_points + xmins_factor * (goal_component + assist_component + cs_component + defcon_points_90 + expected_bonus)
         
         # Ensure non-negative
         xp = max(0.0, xp)
@@ -867,6 +923,8 @@ class PLEngine:
             'goal_component': float(goal_component),
             'assist_component': float(assist_component),
             'cs_component': float(cs_component),
+            'appearance_points': float(appearance_points),
+            'expected_bonus': float(expected_bonus),
             'p_start': self.xmins_model.predict_start_probability(player_data, fixture_data)
         }
     
