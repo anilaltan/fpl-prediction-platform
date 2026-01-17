@@ -35,6 +35,10 @@ services:
       - FPL_EMAIL=${FPL_EMAIL}
       - FPL_PASSWORD=${FPL_PASSWORD}
       - SECRET_KEY=${SECRET_KEY}
+      # Reduce TensorFlow/CUDA log noise
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - TF_ENABLE_ONEDNN_OPTS=0
+      - PYTHONWARNINGS=ignore::UserWarning
     depends_on:
       db:
         condition: service_healthy

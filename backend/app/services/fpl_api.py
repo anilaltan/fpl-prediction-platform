@@ -81,6 +81,86 @@ class FPLAPIService:
             logger.error(f"Failed to fetch bootstrap data: {str(e)}")
             raise Exception(f"Failed to fetch bootstrap data: {str(e)}")
     
+    async def get_current_gameweek(self) -> Optional[int]:
+        """
+        Get the current active gameweek from FPL API.
+        
+        Returns:
+            Current gameweek number, or None if not available
+        """
+        try:
+            bootstrap = await self.get_bootstrap_data()
+            events = bootstrap.get('events', [])
+            
+            # Find current gameweek (is_current = True)
+            current_event = next((e for e in events if e.get('is_current')), None)
+            if current_event:
+                gameweek = current_event.get('id')
+                logger.info(f"Current gameweek: {gameweek}")
+                return gameweek
+            
+            # Fallback: Find next gameweek if current not found
+            next_event = next((e for e in events if e.get('is_next')), None)
+            if next_event:
+                gameweek = next_event.get('id')
+                logger.info(f"Using next gameweek as current: {gameweek}")
+                return gameweek
+            
+            # Last resort: Use the latest finished gameweek
+            finished_events = [e for e in events if e.get('finished')]
+            if finished_events:
+                latest_finished = max(finished_events, key=lambda x: x.get('id', 0))
+                gameweek = latest_finished.get('id')
+                logger.warning(f"No current gameweek found, using latest finished: {gameweek}")
+                return gameweek
+            
+            logger.warning("No gameweek found in bootstrap data")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get current gameweek: {str(e)}")
+            return None
+    
+    async def get_next_gameweek(self) -> Optional[int]:
+        """
+        Get the next upcoming gameweek from FPL API.
+        Prioritizes is_next=True, then finds first unfinished gameweek.
+        
+        Returns:
+            Next gameweek number, or None if not available
+        """
+        try:
+            bootstrap = await self.get_bootstrap_data()
+            events = bootstrap.get('events', [])
+            
+            # Priority 1: Find next gameweek (is_next = True)
+            next_event = next((e for e in events if e.get('is_next')), None)
+            if next_event:
+                gameweek = next_event.get('id')
+                logger.info(f"Next gameweek (is_next=True): {gameweek}")
+                return gameweek
+            
+            # Priority 2: Find first unfinished gameweek (finished = False)
+            unfinished_events = [e for e in events if not e.get('finished', True)]
+            if unfinished_events:
+                # Sort by ID to get the earliest unfinished gameweek
+                unfinished_events.sort(key=lambda x: x.get('id', 999))
+                gameweek = unfinished_events[0].get('id')
+                logger.info(f"Next gameweek (first unfinished): {gameweek}")
+                return gameweek
+            
+            # Fallback: Use current gameweek if no next found
+            current_event = next((e for e in events if e.get('is_current')), None)
+            if current_event:
+                gameweek = current_event.get('id')
+                logger.warning(f"No next gameweek found, using current: {gameweek}")
+                return gameweek
+            
+            logger.warning("No next gameweek found in bootstrap data")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get next gameweek: {str(e)}")
+            return None
+    
     def extract_players_from_bootstrap(self, bootstrap_data: Dict) -> List[Dict]:
         """
         Extract and structure player data from bootstrap-static.
@@ -253,17 +333,38 @@ class FPLAPIService:
         
         return structured_history
     
-    async def get_fixtures(self, gameweek: Optional[int] = None) -> List[Dict]:
-        """Fetch fixtures data."""
+    async def get_fixtures(self, gameweek: Optional[int] = None, future_only: bool = False) -> List[Dict]:
+        """
+        Fetch fixtures data.
+        
+        Args:
+            gameweek: Optional gameweek filter. If None, uses next gameweek for future-focused queries.
+            future_only: If True, only return unfinished fixtures (finished=False)
+        
+        Returns:
+            List of fixture dictionaries
+        """
         try:
             response = await self.client.get(f"{self.BASE_URL}/fixtures/")
             response.raise_for_status()
             fixtures = response.json()
             
+            # If gameweek not provided, use next gameweek for future-focused queries
+            if gameweek is None:
+                next_gw = await self.get_next_gameweek()
+                if next_gw:
+                    gameweek = next_gw
+                    logger.info(f"No gameweek provided, using next gameweek: {gameweek}")
+            
+            # Filter by gameweek if specified
             if gameweek:
                 fixtures = [f for f in fixtures if f.get('event') == gameweek]
             
-            logger.info(f"Fetched {len(fixtures)} fixtures")
+            # Filter out finished fixtures if future_only is True
+            if future_only:
+                fixtures = [f for f in fixtures if not f.get('finished', False)]
+            
+            logger.info(f"Fetched {len(fixtures)} fixtures (gameweek={gameweek}, future_only={future_only})")
             return fixtures
         except httpx.HTTPError as e:
             logger.error(f"Failed to fetch fixtures: {str(e)}")
@@ -287,11 +388,19 @@ class FPLAPIService:
             home_team = team_lookup.get(home_team_id, {})
             away_team = team_lookup.get(away_team_id, {})
             
-            home_strength = home_team.get('strength', 1000)
-            away_strength = away_team.get('strength', 1000)
+            # Get strength values, default to 1000 if not found or 0
+            home_strength = home_team.get('strength', 0) or 1000
+            away_strength = away_team.get('strength', 0) or 1000
             
-            home_difficulty = min(5, max(1, int((away_strength / 1000) * 5)))
-            away_difficulty = min(5, max(1, int((home_strength / 1000) * 5)))
+            # Ensure strength is at least 100 to avoid division issues
+            home_strength = max(home_strength, 100)
+            away_strength = max(away_strength, 100)
+            
+            # Calculate difficulty: opponent's strength determines difficulty
+            # Higher opponent strength = higher difficulty (1-5 scale)
+            # Normalize: strength ranges roughly 1000-1500, map to 1-5
+            home_difficulty = min(5, max(1, int(round((away_strength / 1000.0) * 5))))
+            away_difficulty = min(5, max(1, int(round((home_strength / 1000.0) * 5))))
             
             fixture_data = {
                 'id': fixture.get('id'),

@@ -5,6 +5,7 @@ module.exports = {
     './components/**/*.{js,ts,jsx,tsx,mdx}',
     './app/**/*.{js,ts,jsx,tsx,mdx}',
   ],
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
@@ -19,6 +20,24 @@ module.exports = {
           700: '#0369a1',
           800: '#075985',
           900: '#0c4a6e',
+        },
+        // FPL Analytics Theme - Green & Purple accents
+        fpl: {
+          green: {
+            400: '#4ade80',
+            500: '#22c55e',
+            600: '#16a34a',
+          },
+          purple: {
+            400: '#a78bfa',
+            500: '#8b5cf6',
+            600: '#7c3aed',
+          },
+          dark: {
+            800: '#1e293b',
+            900: '#0f172a',
+            950: '#020617',
+          },
         },
       },
     },

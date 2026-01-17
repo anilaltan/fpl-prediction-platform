@@ -612,9 +612,10 @@ class PLEngine:
         self.model_path = model_path
         self._load_lock = asyncio.Lock()
         
-        # Load models if path provided
-        if model_path and os.path.exists(model_path):
-            asyncio.create_task(self.async_load_models(model_path))
+        # If no model_path provided, try to find the latest model
+        # (Models will be loaded lazily via _ensure_models_loaded() when needed)
+        if not self.model_path:
+            self.model_path = self._load_latest_model()
     
     async def async_load_models(self, model_path: Optional[str] = None):
         """
@@ -744,36 +745,104 @@ class PLEngine:
         with open(path, 'wb') as f:
             pickle.dump(data, f)
     
+    def _load_latest_model(self) -> Optional[str]:
+        """
+        Search for the most recent .pkl model file in the models directory.
+        Returns the path to the latest model file, or None if no models found.
+        """
+        try:
+            # Try multiple possible locations for models directory
+            possible_dirs = []
+            
+            # 1. Relative to this file: backend/models/ (when running from backend/)
+            file_dir = os.path.dirname(os.path.abspath(__file__))
+            # Go up: app/services -> app -> backend
+            backend_dir1 = os.path.dirname(os.path.dirname(file_dir))
+            possible_dirs.append(os.path.join(backend_dir1, 'models'))
+            
+            # 2. Absolute path: /app/models (Docker environment)
+            possible_dirs.append('/app/models')
+            
+            # 3. Current working directory models/
+            possible_dirs.append(os.path.join(os.getcwd(), 'models'))
+            
+            models_dir = None
+            for dir_path in possible_dirs:
+                if os.path.exists(dir_path):
+                    models_dir = dir_path
+                    break
+            
+            if not models_dir:
+                logger.debug(f"Models directory not found in any of: {possible_dirs}")
+                return None
+            
+            # Find all .pkl files
+            pkl_files = [
+                os.path.join(models_dir, f)
+                for f in os.listdir(models_dir)
+                if f.endswith('.pkl') and os.path.isfile(os.path.join(models_dir, f))
+            ]
+            
+            if not pkl_files:
+                logger.debug(f"No .pkl files found in {models_dir}")
+                return None
+            
+            # Sort by modification time (most recent first)
+            pkl_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+            latest_model = pkl_files[0]
+            
+            logger.info(f"Found latest model: {latest_model} (modified: {datetime.fromtimestamp(os.path.getmtime(latest_model))})")
+            return latest_model
+            
+        except Exception as e:
+            logger.warning(f"Error searching for latest model: {str(e)}", exc_info=True)
+            return None
+    
     def _ensure_models_loaded(self):
         """Ensure models are loaded (synchronous check)"""
         if not self.models_loaded:
+            # If no model_path set, try to find latest model
+            if not self.model_path:
+                self.model_path = self._load_latest_model()
+            
             if self.model_path and os.path.exists(self.model_path):
                 # Synchronous load as fallback
                 try:
-                    model_data = joblib.load(self.model_path)
+                    # Try pickle first (as used by train_models.py)
+                    try:
+                        with open(self.model_path, 'rb') as f:
+                            model_data = pickle.load(f)
+                    except:
+                        # Fallback to joblib if pickle fails
+                        model_data = joblib.load(self.model_path)
+                    
                     self.xmins_model = XMinsModel()
                     if model_data.get('xmins_model'):
                         self.xmins_model.model = model_data['xmins_model']
                         self.xmins_model.scaler = model_data.get('xmins_scaler', StandardScaler())
                         self.xmins_model.is_trained = True
+                        logger.info("xMins model loaded and marked as trained")
                     
                     self.attack_model = AttackModel()
-                    if model_data.get('attack_xg_model'):
+                    if model_data.get('attack_xg_model') and model_data.get('attack_xa_model'):
                         self.attack_model.xg_model = model_data['attack_xg_model']
                         self.attack_model.xa_model = model_data['attack_xa_model']
                         self.attack_model.scaler = model_data.get('attack_scaler', StandardScaler())
                         self.attack_model.xg_trained = True
                         self.attack_model.xa_trained = True
+                        logger.info("Attack model loaded and marked as trained")
                     
                     self.defense_model = model_data.get('defense_model', DefenseModel())
                     self.models_loaded = True
+                    logger.info(f"Models loaded successfully from {self.model_path}")
                 except Exception as e:
-                    logger.error(f"Error in fallback model load: {str(e)}")
+                    logger.error(f"Error in fallback model load: {str(e)}", exc_info=True)
                     self.xmins_model = XMinsModel()
                     self.attack_model = AttackModel()
                     self.defense_model = DefenseModel()
                     self.models_loaded = True
             else:
+                logger.warning("No model path available, initializing empty models")
                 self.xmins_model = XMinsModel()
                 self.attack_model = AttackModel()
                 self.defense_model = DefenseModel()

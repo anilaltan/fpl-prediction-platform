@@ -41,7 +41,11 @@ from app.services.third_party_data import ThirdPartyDataService, UnderstatServic
 from app.services.entity_resolution import EntityResolutionService
 from app.services.data_cleaning import DataCleaningService
 from app.services.etl_service import ETLService
+from app.models import Player, PlayerGameweekStats, Prediction
 import logging
+import asyncio
+from functools import lru_cache
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -67,13 +71,128 @@ entity_resolution = EntityResolutionService()
 data_cleaning = DataCleaningService()
 etl_service = ETLService()
 
+# =============================================================================
+# GLOBAL IN-MEMORY CACHE SYSTEM (Graceful Degradation Architecture)
+# =============================================================================
+# Purpose: Prevent server overload from repeated ML calculations
+# Strategy: Cache-first approach with fallback to basic data
+
+DATA_CACHE = {
+    "players_by_gw": {},       # Dict[int, List[PlayerDisplayData]] - gameweek -> players
+    "dream_team_by_gw": {},    # Dict[int, DreamTeamResponse] - gameweek -> dream team
+    "last_updated_by_gw": {},  # Dict[int, float] - gameweek -> timestamp
+    "is_computing": False,     # Lock flag to prevent concurrent calculations
+    "error_count": 0,          # Track consecutive errors
+    "current_gameweek": None,  # Cached current gameweek from FPL API
+    "gameweek_last_updated": 0,  # Timestamp of last gameweek update
+}
+
+# Cache TTL: 10 minutes (600 seconds)
+CACHE_TTL_SECONDS = 600
+GAMEWEEK_CACHE_TTL_SECONDS = 3600  # 1 hour for gameweek (changes less frequently)
+
+# Max errors before fallback mode
+MAX_ERROR_COUNT = 3
+
+def _is_cache_valid(gameweek: int) -> bool:
+    """Check if cache is valid for a specific gameweek (not expired and has data)"""
+    if gameweek not in DATA_CACHE["players_by_gw"]:
+        return False
+    if gameweek not in DATA_CACHE["last_updated_by_gw"]:
+        return False
+    elapsed = datetime.now().timestamp() - DATA_CACHE["last_updated_by_gw"][gameweek]
+    return elapsed < CACHE_TTL_SECONDS
+
+def _get_cached_players(gameweek: int):
+    """Get cached players list for a specific gameweek if valid"""
+    if _is_cache_valid(gameweek):
+        return DATA_CACHE["players_by_gw"][gameweek]
+    return None
+
+def _get_cached_dream_team(gameweek: int):
+    """Get cached dream team for a specific gameweek if valid"""
+    if _is_cache_valid(gameweek) and gameweek in DATA_CACHE["dream_team_by_gw"]:
+        return DATA_CACHE["dream_team_by_gw"][gameweek]
+    return None
+
+def _update_cache(gameweek: int, players_data: List, dream_team=None):
+    """Update the global cache with new data for a specific gameweek"""
+    DATA_CACHE["players_by_gw"][gameweek] = players_data
+    if dream_team:
+        DATA_CACHE["dream_team_by_gw"][gameweek] = dream_team
+    DATA_CACHE["last_updated_by_gw"][gameweek] = datetime.now().timestamp()
+    DATA_CACHE["error_count"] = 0
+    logger.info(f"Cache updated for GW{gameweek} with {len(players_data)} players at {datetime.now()}")
+
+
+async def _get_current_gameweek() -> int:
+    """
+    Get current gameweek from FPL API with caching.
+    Falls back to 1 if API call fails.
+    """
+    # Check cache first
+    current_time = datetime.now().timestamp()
+    if DATA_CACHE["current_gameweek"] is not None:
+        elapsed = current_time - DATA_CACHE["gameweek_last_updated"]
+        if elapsed < GAMEWEEK_CACHE_TTL_SECONDS:
+            return DATA_CACHE["current_gameweek"]
+    
+    # Fetch from FPL API
+    try:
+        current_gw = await fpl_api.get_current_gameweek()
+        if current_gw:
+            DATA_CACHE["current_gameweek"] = current_gw
+            DATA_CACHE["gameweek_last_updated"] = current_time
+            logger.info(f"Current gameweek updated: {current_gw}")
+            return current_gw
+    except Exception as e:
+        logger.warning(f"Failed to get current gameweek: {str(e)}")
+    
+    # Fallback to cached value or default
+    if DATA_CACHE["current_gameweek"]:
+        return DATA_CACHE["current_gameweek"]
+    
+    logger.warning("Using default gameweek: 1")
+    return 1
+
+
+async def _get_next_gameweek() -> int:
+    """
+    Get next/upcoming gameweek from FPL API for Dashboard.
+    Prioritizes is_next=True, then finds first unfinished gameweek.
+    Falls back to current gameweek if next not found.
+    """
+    try:
+        next_gw = await fpl_api.get_next_gameweek()
+        if next_gw:
+            logger.info(f"Next gameweek for Dashboard: {next_gw}")
+            return next_gw
+        
+        # Fallback to current gameweek
+        current_gw = await _get_current_gameweek()
+        logger.warning(f"No next gameweek found, using current: {current_gw}")
+        return current_gw
+    except Exception as e:
+        logger.warning(f"Failed to get next gameweek: {str(e)}")
+        # Fallback to current gameweek
+        return await _get_current_gameweek()
+
 # Scheduler for daily refresh
 scheduler = AsyncIOScheduler()
 
 # CORS middleware
+# Allow requests from localhost, Docker internal network, and VPS public IP
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://frontend:3000",  # Docker internal service name
+    "http://46.224.178.180:3000",  # VPS public IP
+    "*"  # Allow all origins for development (can be restricted in production)
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://frontend:3000"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -83,13 +202,152 @@ app.add_middleware(
 async def root():
     return {
         "message": "FPL Point Prediction API",
-        "version": "1.0.0",
-        "status": "operational"
+        "version": "2.0.0",
+        "status": "operational",
+        "architecture": "Graceful Degradation"
     }
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    current_gw = DATA_CACHE.get("current_gameweek") or await _get_current_gameweek()
+    cache_valid = _is_cache_valid(current_gw)
+    cache_age = 0
+    if current_gw in DATA_CACHE["last_updated_by_gw"]:
+        cache_age = datetime.now().timestamp() - DATA_CACHE["last_updated_by_gw"][current_gw]
+    cached_count = len(DATA_CACHE["players_by_gw"].get(current_gw, []))
+    
+    return {
+        "status": "healthy",
+        "current_gameweek": current_gw,
+        "cache_valid": cache_valid,
+        "cache_age_seconds": round(cache_age, 1) if cache_age > 0 else None,
+        "cached_players_count": cached_count,
+        "is_computing": DATA_CACHE["is_computing"],
+        "error_count": DATA_CACHE["error_count"]
+    }
+
+
+@app.get("/api/cache/status")
+async def get_cache_status():
+    """
+    Get detailed cache status for debugging.
+    """
+    current_gw = DATA_CACHE.get("current_gameweek") or await _get_current_gameweek()
+    cache_valid = _is_cache_valid(current_gw)
+    cache_age = 0
+    if current_gw in DATA_CACHE["last_updated_by_gw"]:
+        cache_age = datetime.now().timestamp() - DATA_CACHE["last_updated_by_gw"][current_gw]
+    ttl_remaining = max(0, CACHE_TTL_SECONDS - cache_age) if cache_age > 0 else 0
+    cached_count = len(DATA_CACHE["players_by_gw"].get(current_gw, []))
+    
+    return {
+        "current_gameweek": current_gw,
+        "cache_valid": cache_valid,
+        "cache_ttl_seconds": CACHE_TTL_SECONDS,
+        "cache_age_seconds": round(cache_age, 1) if cache_age > 0 else None,
+        "ttl_remaining_seconds": round(ttl_remaining, 1),
+        "cached_players_count": cached_count,
+        "dream_team_cached": current_gw in DATA_CACHE["dream_team_by_gw"],
+        "is_computing": DATA_CACHE["is_computing"],
+        "error_count": DATA_CACHE["error_count"],
+        "last_updated": datetime.fromtimestamp(DATA_CACHE["last_updated_by_gw"][current_gw]).isoformat() if current_gw in DATA_CACHE["last_updated_by_gw"] else None
+    }
+
+
+@app.post("/api/cache/refresh")
+async def refresh_cache(db: Session = Depends(get_db)):
+    """
+    Force refresh the player cache.
+    Use this after model training or data updates.
+    """
+    # Clear existing cache for current gameweek
+    current_gw = await _get_current_gameweek()
+    if current_gw in DATA_CACHE["players_by_gw"]:
+        del DATA_CACHE["players_by_gw"][current_gw]
+    if current_gw in DATA_CACHE["dream_team_by_gw"]:
+        del DATA_CACHE["dream_team_by_gw"][current_gw]
+    if current_gw in DATA_CACHE["last_updated_by_gw"]:
+        del DATA_CACHE["last_updated_by_gw"][current_gw]
+    
+    # Trigger new calculation with current gameweek
+    logger.info("[CACHE] Manual refresh triggered")
+    
+    try:
+        current_gw = await _get_current_gameweek()
+        players = await get_all_players(gameweek=current_gw, db=db)
+        return {
+            "status": "success",
+            "message": f"Cache refreshed with {len(players)} players for GW{current_gw}",
+            "gameweek": current_gw,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.post("/api/predictions/update")
+async def update_predictions_endpoint(
+    gameweek: Optional[int] = None,
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Manually trigger batch prediction update.
+    Calculates ML predictions for all players and stores in Prediction table.
+    
+    Args:
+        gameweek: Optional gameweek number (default: current gameweek)
+        background_tasks: If provided, runs in background
+    
+    Returns:
+        Status message
+    """
+    try:
+        from app.scripts.update_predictions import update_predictions_for_gameweek, update_predictions_for_current_gameweek
+        from app.database import SessionLocal
+        
+        if background_tasks:
+            # Run in background
+            async def bg_task():
+                db = SessionLocal()
+                try:
+                    if gameweek:
+                        await update_predictions_for_gameweek(db, gameweek)
+                    else:
+                        await update_predictions_for_current_gameweek()
+                finally:
+                    db.close()
+            
+            background_tasks.add_task(bg_task)
+            return {
+                "status": "started",
+                "message": "Prediction update started in background",
+                "gameweek": gameweek or "current"
+            }
+        else:
+            # Run synchronously
+            db = SessionLocal()
+            try:
+                if gameweek:
+                    result = await update_predictions_for_gameweek(db, gameweek)
+                else:
+                    current_gw = await _get_current_gameweek()
+                    result = await update_predictions_for_gameweek(db, current_gw)
+                
+                return {
+                    "status": "success",
+                    "message": f"Predictions updated: {result.get('updated_count', 0)} players",
+                    "result": result
+                }
+            finally:
+                db.close()
+                
+    except Exception as e:
+        logger.error(f"Error updating predictions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Feature Engineering Endpoints
@@ -655,99 +913,545 @@ async def run_backtest(request: BacktestRequest):
 # Frontend Integration Endpoints
 
 @app.get("/api/players/all", response_model=List[PlayerDisplayData])
-async def get_all_players(gameweek: int = 1):
+async def get_all_players(
+    gameweek: Optional[int] = None, 
+    db: Session = Depends(get_db), 
+    limit: Optional[int] = None,
+    use_next_gameweek: bool = False
+):
     """
-    Get all players with predictions for All Players page.
+    Get all players with ML-powered predictions for All Players page.
+    
+    Architecture: Batch Prediction (Fast Database Read)
+    - Reads pre-calculated predictions from Prediction table
+    - No ML computation during API request (ultra-fast)
+    - Falls back to basic data if predictions not available
+    
+    Args:
+        gameweek: Gameweek number (default: next gameweek if use_next_gameweek=True, else current gameweek)
+        limit: Optional limit on number of players to return
+        use_next_gameweek: If True, uses next/upcoming gameweek (for Dashboard). Default: False
     """
+    # ==========================================================================
+    # STEP 0: GET GAMEWEEK IF NOT PROVIDED
+    # ==========================================================================
+    if gameweek is None:
+        if use_next_gameweek:
+            # Dashboard mode: Use next/upcoming gameweek
+            gameweek = await _get_next_gameweek()
+            logger.info(f"[BATCH] Using next gameweek for Dashboard: {gameweek}")
+        else:
+            # Default mode: Use current gameweek
+            gameweek = await _get_current_gameweek()
+            logger.info(f"[BATCH] Using current gameweek: {gameweek}")
+    
+    # ==========================================================================
+    # STEP 1: CHECK GLOBAL CACHE FIRST (Fastest path)
+    # ==========================================================================
+    cached_players = _get_cached_players(gameweek)
+    if cached_players is not None:
+        logger.info(f"[CACHE HIT] Returning {len(cached_players)} cached players for GW{gameweek}")
+        if limit:
+            return cached_players[:limit]
+        return cached_players
+    
     try:
-        # Fetch bootstrap data
-        bootstrap = await fpl_api.get_bootstrap_data()
+        # ======================================================================
+        # STEP 2: READ PREDICTIONS FROM DATABASE (Batch Prediction)
+        # ======================================================================
+        predictions = db.query(Prediction).filter(
+            Prediction.gameweek == gameweek,
+            Prediction.season == "2025-26"
+        ).all()
         
+        logger.info(f"[BATCH] Loaded {len(predictions)} predictions from database for GW{gameweek}")
+        
+        # Create prediction map by fpl_id
+        prediction_map = {p.fpl_id: p for p in predictions}
+        
+        # ======================================================================
+        # STEP 3: FETCH ALL PLAYERS AND JOIN WITH PREDICTIONS
+        # ======================================================================
+        players = db.query(Player).all()
+        
+        if not players:
+            logger.warning("[BATCH] No players in database")
+            return []
+        
+        # ======================================================================
+        # STEP 4: FETCH FPL BOOTSTRAP DATA ONCE (Ownership info)
+        # ======================================================================
+        ownership_map = {}
+        try:
+            bootstrap = await fpl_api.get_bootstrap_data()
+            elements = bootstrap.get('elements', [])
+            for element in elements:
+                fpl_id = element.get('id')
+                if fpl_id:
+                    ownership_map[fpl_id] = float(element.get('selected_by_percent', 0.0))
+        except Exception as e:
+            logger.warning(f"[FPL API] Failed to fetch ownership data: {str(e)}")
+        
+        # ======================================================================
+        # STEP 5: BUILD RESPONSE FROM PREDICTIONS + PLAYER DATA
+        # ======================================================================
         players_data = []
-        elements = bootstrap.get('elements', [])
+        missing_predictions = 0
         
-        for element in elements[:50]:  # Limit for demo
-            player_id = element.get('id')
-            
-            # Get player summary
+        for player in players:
             try:
-                player_summary = await fpl_api.get_player_data(player_id)
-                history = player_summary.get('history', [])
+                # Get prediction from database
+                prediction = prediction_map.get(player.fpl_id)
                 
-                # Get predictions (simplified - in production, use ML engine)
-                expected_points = element.get('points_per_game', 0.0) * 90 / 90  # Simplified
+                if prediction:
+                    # Use pre-calculated prediction
+                    xp = prediction.xp or 0.0
+                    xg = prediction.xg or 0.0
+                    xa = prediction.xa or 0.0
+                    xmins = prediction.xmins or 0.0
+                    xcs = prediction.xcs or 0.0
+                    defcon_score = prediction.defcon_score or 0.0
+                else:
+                    # No prediction found - use fallback values
+                    missing_predictions += 1
+                    if player.position == 'FWD':
+                        xp = 2.5
+                    elif player.position == 'MID':
+                        xp = 2.0
+                    elif player.position == 'DEF':
+                        xp = 1.5
+                    else:  # GK
+                        xp = 1.5
+                    xg = 0.0
+                    xa = 0.0
+                    xmins = 45.0
+                    xcs = 0.0
+                    defcon_score = 0.0
                 
+                # Get ownership
+                ownership = ownership_map.get(player.fpl_id, 0.0)
+                
+                # Get form from latest stats (if available)
+                latest_stat = db.query(PlayerGameweekStats).filter(
+                    PlayerGameweekStats.fpl_id == player.fpl_id,
+                    PlayerGameweekStats.season == "2025-26"
+                ).order_by(PlayerGameweekStats.gameweek.desc()).first()
+                
+                form = 0.0
+                if latest_stat:
+                    form = float(latest_stat.total_points or 0) / 10.0
+                
+                # Create player display data
                 players_data.append(PlayerDisplayData(
-                    id=player_id,
-                    fpl_id=player_id,
-                    name=element.get('web_name', ''),
-                    position=['GK', 'DEF', 'MID', 'FWD'][element.get('element_type', 1) - 1],
-                    team=element.get('team', 0),
-                    price=element.get('now_cost', 0) / 10.0,
-                    expected_points=expected_points,
-                    ownership_percent=float(element.get('selected_by_percent', 0.0)),
-                    form=float(element.get('form', 0.0))
+                    id=player.id,
+                    fpl_id=player.fpl_id,
+                    name=player.name,
+                    position=player.position,
+                    team=player.team,
+                    price=player.price,
+                    expected_points=round(xp, 2),
+                    ownership_percent=round(ownership, 1),
+                    form=round(form, 1),
+                    xg=round(xg, 3),
+                    xa=round(xa, 3),
+                    xmins=round(xmins, 1),
+                    xcs=round(xcs, 3),
+                    defcon_score=round(defcon_score, 2)
                 ))
-            except:
+                
+            except Exception as player_error:
+                logger.error(f"[SKIP] Player {player.fpl_id} ({player.name}): {str(player_error)}")
                 continue
         
+        # ======================================================================
+        # STEP 6: UPDATE GLOBAL CACHE
+        # ======================================================================
+        _update_cache(gameweek, players_data)
+        
+        # Log summary
+        logger.info(
+            f"[BATCH COMPLETE] Loaded {len(players_data)} players from predictions, "
+            f"Missing predictions: {missing_predictions}"
+        )
+        
+        if limit:
+            return players_data[:limit]
         return players_data
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # ======================================================================
+        # GRACEFUL DEGRADATION: Return basic data on catastrophic failure
+        # ======================================================================
+        logger.error(f"[BATCH ERROR] get_all_players failed: {str(e)}")
+        
+        # Try to return basic data instead of 500 error
+        try:
+            return await _get_basic_player_data(db, limit)
+        except Exception as fallback_error:
+            logger.error(f"[FALLBACK FAILED] {str(fallback_error)}")
+            return []
+
+
+async def _get_basic_player_data(db: Session, limit: Optional[int] = None) -> List[PlayerDisplayData]:
+    """
+    Fallback function: Return basic player data without ML predictions.
+    Used when ML models are unavailable or during errors.
+    """
+    try:
+        query = db.query(Player)
+        if limit:
+            query = query.limit(limit)
+        players = query.all()
+        
+        players_data = []
+        for player in players:
+            players_data.append(PlayerDisplayData(
+                id=player.id,
+                fpl_id=player.fpl_id,
+                name=player.name,
+                position=player.position,
+                team=player.team,
+                price=player.price,
+                expected_points=2.0,  # Default baseline xP
+                ownership_percent=0.0,
+                form=0.0,
+                xg=0.0,
+                xa=0.0,
+                xmins=45.0,
+                xcs=0.0,
+                defcon_score=0.0
+            ))
+        
+        logger.info(f"[FALLBACK] Returned basic data for {len(players_data)} players")
+        return players_data
+    except Exception as e:
+        logger.error(f"[FALLBACK ERROR] {str(e)}")
+        return []
 
 
 @app.get("/api/dream-team", response_model=DreamTeamResponse)
-async def get_dream_team(gameweek: int = 1):
+async def get_dream_team(gameweek: Optional[int] = None, db: Session = Depends(get_db)):
     """
-    Get optimal Dream Team for a gameweek.
+    Get optimal Dream Team for a gameweek using TeamSolver optimization.
+    
+    Architecture: Cache-First with Graceful Degradation
+    - OPTIMIZATION: Uses cached player predictions from get_all_players
+    - Falls back to simple selection if solver fails
+    - Never returns 500 error
+    
+    Args:
+        gameweek: Gameweek number (default: current gameweek from FPL API)
+    """
+    # ==========================================================================
+    # STEP 0: GET CURRENT GAMEWEEK IF NOT PROVIDED
+    # ==========================================================================
+    if gameweek is None:
+        gameweek = await _get_current_gameweek()
+        logger.info(f"[GAMEWEEK] Using current gameweek: {gameweek}")
+    
+    # ==========================================================================
+    # STEP 1: CHECK DREAM TEAM CACHE
+    # ==========================================================================
+    cached_dream_team = _get_cached_dream_team(gameweek)
+    if cached_dream_team is not None:
+        logger.info(f"[CACHE HIT] Returning cached dream team for GW{gameweek}")
+        return cached_dream_team
+    
+    try:
+        # ======================================================================
+        # STEP 2: USE CACHED PLAYER DATA (Don't recalculate ML predictions!)
+        # ======================================================================
+        cached_players = _get_cached_players(gameweek)
+        
+        if cached_players is None:
+            # Cache is empty - trigger player data calculation first
+            logger.info(f"[CACHE MISS] Triggering player data calculation for GW{gameweek}")
+            cached_players = await get_all_players(gameweek=gameweek, db=db)
+        
+        if not cached_players:
+            logger.warning("[ERROR] No player data available for dream team")
+            return DreamTeamResponse(
+                gameweek=gameweek,
+                squad=[],
+                starting_xi=[],
+                total_expected_points=0.0,
+                total_cost=0.0,
+                formation="0-0-0"
+            )
+        
+        # ======================================================================
+        # STEP 3: FETCH TEAM ID MAPPING (for solver constraints)
+        # ======================================================================
+        team_id_map = {}
+        try:
+            bootstrap = await fpl_api.get_bootstrap_data()
+            teams = bootstrap.get('teams', [])
+            for team in teams:
+                team_name = team.get('name', '')
+                team_id = team.get('id', 0)
+                if team_name and team_id:
+                    team_id_map[team_name] = team_id
+        except Exception as e:
+            logger.warning(f"[FPL API] Failed to fetch team mapping: {str(e)}")
+            # Create fallback team_id_map from cached players
+            for i, p in enumerate(cached_players):
+                if p.team and p.team not in team_id_map:
+                    team_id_map[p.team] = i + 1
+        
+        # ======================================================================
+        # STEP 4: CONVERT CACHED PLAYERS TO SOLVER FORMAT
+        # ======================================================================
+        players_data = []
+        for player in cached_players:
+            try:
+                team_id = team_id_map.get(player.team, 0)
+                players_data.append({
+                    'id': player.fpl_id,
+                    'name': player.name,
+                    'position': player.position,
+                    'price': player.price,
+                    'team_id': team_id,
+                    'team_name': player.team,
+                    'expected_points_gw1': player.expected_points,
+                    'expected_points_gw2': player.expected_points,
+                    'expected_points_gw3': player.expected_points,
+                    'p_start': 0.8 if player.xmins and player.xmins > 60 else 0.5
+                })
+            except Exception as e:
+                logger.warning(f"[SKIP] Player {player.name}: {str(e)}")
+                continue
+        
+        logger.info(f"[SOLVER] Prepared {len(players_data)} players for optimization")
+        
+        # ======================================================================
+        # STEP 5: RUN TEAM SOLVER (with fallback)
+        # ======================================================================
+        dream_team_response = None
+        
+        try:
+            solution = team_solver.solve(
+                players=players_data,
+                current_squad=None,
+                locked_players=None,
+                excluded_players=None
+            )
+            
+            if solution.get('optimal', False):
+                # Build response from solver solution
+                # Solver returns integer keys (1, 2, 3) not 'week1', 'week2', etc.
+                squad_week1 = solution.get('squads', {}).get(1, [])
+                starting_xi_week1 = solution.get('starting_xis', {}).get(1, [])
+                
+                squad = []
+                for player_id in squad_week1:
+                    player_dict = next((p for p in players_data if p['id'] == player_id), None)
+                    if player_dict:
+                        squad.append(DreamTeamPlayer(
+                            player_id=player_dict['id'],
+                            name=player_dict['name'],
+                            position=player_dict['position'],
+                            team=player_dict.get('team_name', 'Unknown'),  # team should be string
+                            expected_points=player_dict['expected_points_gw1'],
+                            price=player_dict['price']
+                        ))
+                
+                starting_xi = []
+                for player_id in starting_xi_week1:
+                    player_dict = next((p for p in players_data if p['id'] == player_id), None)
+                    if player_dict:
+                        starting_xi.append(DreamTeamPlayer(
+                            player_id=player_dict['id'],
+                            name=player_dict['name'],
+                            position=player_dict['position'],
+                            team=player_dict.get('team_name', 'Unknown'),  # team should be string
+                            expected_points=player_dict['expected_points_gw1'],
+                            price=player_dict['price']
+                        ))
+                
+                dream_team_response = DreamTeamResponse(
+                    gameweek=gameweek,
+                    squad=squad,
+                    starting_xi=starting_xi,
+                    total_expected_points=solution.get('total_points', 0.0),
+                    total_cost=sum(p.price for p in squad),
+                    formation=_determine_formation(starting_xi)
+                )
+                
+                logger.info(f"[SOLVER SUCCESS] Dream team optimized: {len(squad)} players")
+            else:
+                logger.warning(f"[SOLVER] Optimization not optimal: {solution.get('status', 'unknown')}")
+                
+        except Exception as solver_error:
+            logger.error(f"[SOLVER ERROR] {str(solver_error)}")
+        
+        # ======================================================================
+        # STEP 6: FALLBACK TO SIMPLE SELECTION IF SOLVER FAILED
+        # ======================================================================
+        if dream_team_response is None:
+            logger.info("[FALLBACK] Using simple dream team selection")
+            dream_team_response = await _get_fallback_dream_team(players_data, gameweek)
+        
+        # ======================================================================
+        # STEP 7: UPDATE CACHE WITH DREAM TEAM
+        # ======================================================================
+        if dream_team_response and dream_team_response.squad:
+            DATA_CACHE["dream_team_by_gw"][gameweek] = dream_team_response
+            logger.info(f"[CACHE] Dream team cached for GW{gameweek}")
+        
+        return dream_team_response
+        
+    except Exception as e:
+        logger.error(f"[CRITICAL] get_dream_team failed: {str(e)}")
+        
+        # Return empty dream team instead of 500 error
+        return DreamTeamResponse(
+            gameweek=gameweek,
+            squad=[],
+            starting_xi=[],
+            total_expected_points=0.0,
+            total_cost=0.0,
+            formation="0-0-0"
+        )
+
+
+async def _get_fallback_dream_team(players_data: List[Dict], gameweek: int) -> DreamTeamResponse:
+    """
+    Fallback dream team selection if solver fails.
+    Uses greedy selection by position with max 3 per team constraint.
     """
     try:
-        # This would use the solver to find optimal team
-        # For now, return a simplified version
-        bootstrap = await fpl_api.get_bootstrap_data()
-        elements = bootstrap.get('elements', [])
-        
-        # Sort by points per game and select best team
+        # Sort by expected points
         sorted_players = sorted(
-            elements,
-            key=lambda x: x.get('points_per_game', 0),
+            players_data,
+            key=lambda x: float(x.get('expected_points_gw1', 0) or 0),
             reverse=True
         )
         
-        # Select by position (simplified)
+        # Select by position with team limit
         squad = []
         positions = {'GK': 2, 'DEF': 5, 'MID': 5, 'FWD': 3}
-        pos_map = {1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD'}
+        pos_counts = {'GK': 0, 'DEF': 0, 'MID': 0, 'FWD': 0}
+        team_counts = {}  # Track players per team
         
-        for pos_name, count in positions.items():
-            pos_num = [k for k, v in pos_map.items() if v == pos_name][0]
-            pos_players = [p for p in sorted_players if p.get('element_type') == pos_num]
+        for player in sorted_players:
+            pos = player.get('position', 'MID')
+            if pos not in positions:
+                pos = 'MID'  # Default position
             
-            for i, player in enumerate(pos_players[:count]):
+            team_id = player.get('team_id', 0)
+            team_name = player.get('team_name', 'Unknown')
+            
+            # Check position limit
+            if pos_counts.get(pos, 0) >= positions.get(pos, 0):
+                continue
+            
+            # Check team limit (max 3 per team)
+            if team_counts.get(team_id, 0) >= 3 and team_id != 0:
+                continue
+            
+            # Validate required fields
+            player_id = player.get('id')
+            player_name = player.get('name', 'Unknown')
+            player_price = float(player.get('price', 0) or 0)
+            player_xp = float(player.get('expected_points_gw1', 0) or 0)
+            
+            if player_id is None:
+                continue
+            
+            try:
                 squad.append(DreamTeamPlayer(
-                    player_id=player.get('id'),
-                    name=player.get('web_name', ''),
-                    position=pos_name,
-                    team=player.get('team', 0),
-                    expected_points=player.get('points_per_game', 0.0),
-                    price=player.get('now_cost', 0) / 10.0
+                    player_id=int(player_id),
+                    name=str(player_name),
+                    position=str(pos),
+                    team=str(team_name) if team_name else "Unknown",  # team should be string (team name)
+                    expected_points=round(player_xp, 2),
+                    price=round(player_price, 1)
                 ))
+                pos_counts[pos] = pos_counts.get(pos, 0) + 1
+                team_counts[team_id] = team_counts.get(team_id, 0) + 1
+            except Exception as e:
+                logger.warning(f"[FALLBACK SKIP] Player {player_name}: {str(e)}")
+                continue
+            
+            # Check if squad is complete (15 players)
+            if len(squad) >= 15:
+                break
         
-        # Starting XI (best 11)
-        starting_xi = sorted(squad, key=lambda x: x.expected_points, reverse=True)[:11]
+        if not squad:
+            logger.error("[FALLBACK] Could not build any squad!")
+            return DreamTeamResponse(
+                gameweek=gameweek,
+                squad=[],
+                starting_xi=[],
+                total_expected_points=0.0,
+                total_cost=0.0,
+                formation="0-0-0"
+            )
+        
+        # Select starting XI (best 11 with valid formation)
+        # Sort squad by xP
+        sorted_squad = sorted(squad, key=lambda x: x.expected_points, reverse=True)
+        
+        # Build valid starting XI
+        starting_xi = []
+        xi_pos_counts = {'GK': 0, 'DEF': 0, 'MID': 0, 'FWD': 0}
+        xi_pos_limits = {'GK': 1, 'DEF': 5, 'MID': 5, 'FWD': 3}  # Max in starting XI
+        xi_pos_mins = {'GK': 1, 'DEF': 3, 'MID': 2, 'FWD': 1}     # Min in starting XI
+        
+        # First pass: ensure minimums
+        for player in sorted_squad:
+            pos = player.position
+            if xi_pos_counts.get(pos, 0) < xi_pos_mins.get(pos, 0):
+                starting_xi.append(player)
+                xi_pos_counts[pos] = xi_pos_counts.get(pos, 0) + 1
+        
+        # Second pass: fill remaining slots with best players
+        for player in sorted_squad:
+            if len(starting_xi) >= 11:
+                break
+            if player in starting_xi:
+                continue
+            pos = player.position
+            if xi_pos_counts.get(pos, 0) < xi_pos_limits.get(pos, 0):
+                starting_xi.append(player)
+                xi_pos_counts[pos] = xi_pos_counts.get(pos, 0) + 1
+        
+        formation = _determine_formation(starting_xi)
+        total_xp = sum(p.expected_points for p in starting_xi)
+        total_cost = sum(p.price for p in squad)
+        
+        logger.info(f"[FALLBACK SUCCESS] Squad: {len(squad)}, XI: {len(starting_xi)}, Formation: {formation}")
         
         return DreamTeamResponse(
             gameweek=gameweek,
             squad=squad,
             starting_xi=starting_xi,
-            total_expected_points=sum(p.expected_points for p in starting_xi),
-            total_cost=sum(p.price for p in squad),
-            formation="4-4-2"  # Simplified
+            total_expected_points=round(total_xp, 2),
+            total_cost=round(total_cost, 1),
+            formation=formation
         )
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[FALLBACK CRITICAL] {str(e)}")
+        return DreamTeamResponse(
+            gameweek=gameweek,
+            squad=[],
+            starting_xi=[],
+            total_expected_points=0.0,
+            total_cost=0.0,
+            formation="0-0-0"
+        )
+
+
+def _determine_formation(starting_xi: List[DreamTeamPlayer]) -> str:
+    """Determine formation from starting XI"""
+    pos_counts = {'GK': 0, 'DEF': 0, 'MID': 0, 'FWD': 0}
+    for player in starting_xi:
+        pos = player.position
+        pos_counts[pos] = pos_counts.get(pos, 0) + 1
+    
+    # Standard formation format: DEF-MID-FWD
+    return f"{pos_counts.get('DEF', 0)}-{pos_counts.get('MID', 0)}-{pos_counts.get('FWD', 0)}"
 
 
 # FPL API Raw Data Endpoints
@@ -794,27 +1498,45 @@ async def get_player_history(player_id: int):
 @app.get("/api/fpl/fixtures")
 async def get_fixtures_data(
     gameweek: Optional[int] = None,
-    include_difficulty: bool = True
+    include_difficulty: bool = True,
+    future_only: bool = True
 ):
     """
     Get fixtures data with optional difficulty ratings.
+    Dashboard-focused: Returns future fixtures by default (next gameweek, unfinished matches only).
     
     Args:
-        gameweek: Optional gameweek filter
+        gameweek: Optional gameweek filter. If None, uses next gameweek.
         include_difficulty: Calculate and include difficulty ratings
+        future_only: If True, only return unfinished fixtures (default: True for Dashboard)
     """
     try:
-        fixtures = await fpl_api.get_fixtures(gameweek)
+        # Get next gameweek if not provided (for Dashboard)
+        next_gameweek = None
+        if gameweek is None:
+            next_gameweek = await fpl_api.get_next_gameweek()
+            if next_gameweek:
+                gameweek = next_gameweek
+                logger.info(f"[FIXTURES] Using next gameweek: {gameweek}")
+        
+        # Fetch fixtures (future_only=True by default for Dashboard)
+        fixtures = await fpl_api.get_fixtures(gameweek=gameweek, future_only=future_only)
         
         if include_difficulty:
             bootstrap = await fpl_api.get_bootstrap_data()
             teams = fpl_api.extract_teams_from_bootstrap(bootstrap)
             fixtures = fpl_api.extract_fixtures_with_difficulty(fixtures, teams)
         
+        # Ensure we have a gameweek ID for the response
+        current_gameweek_id = gameweek
+        if current_gameweek_id is None:
+            current_gameweek_id = await fpl_api.get_next_gameweek()
+        
         return {
             'fixtures': fixtures,
             'count': len(fixtures),
-            'gameweek': gameweek
+            'gameweek': gameweek,
+            'current_gameweek_id': current_gameweek_id  # Next/upcoming gameweek for Dashboard
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1031,12 +1753,47 @@ async def map_players_across_sources(season: str = "2025"):
 
 @app.on_event("startup")
 async def startup_event():
-    """Load Master ID Map and start scheduler on startup"""
+    """Load Master ID Map, ML models, and start scheduler on startup"""
+    # Reduce log noise from TensorFlow and other libraries
+    import os
+    import warnings
+    os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')  # Only show errors
+    warnings.filterwarnings('ignore', category=UserWarning)
+    warnings.filterwarnings('ignore', message='.*protected namespace.*')
+    
     try:
         await entity_resolution.load_master_map()
         logger.info("Master ID Map loaded successfully")
     except Exception as e:
         logger.warning(f"Failed to load Master ID Map on startup: {str(e)}")
+    
+    # CRITICAL: Load ML models into memory
+    try:
+        ml_engine._ensure_models_loaded()
+        logger.info("ML Engine models loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load ML Engine models on startup: {str(e)}")
+    
+    # BATCH PREDICTION: Update predictions in background (non-blocking)
+    try:
+        from app.scripts.update_predictions import update_predictions_for_current_gameweek
+        
+        async def update_predictions_background():
+            """Background task to update predictions"""
+            try:
+                # Wait a bit for app to fully start
+                await asyncio.sleep(5)
+                logger.info("[BATCH PREDICTION] Starting background prediction update")
+                await update_predictions_for_current_gameweek()
+                logger.info("[BATCH PREDICTION] Background prediction update completed")
+            except Exception as e:
+                logger.error(f"[BATCH PREDICTION] Background update failed: {str(e)}")
+        
+        # Run in background (don't block startup)
+        asyncio.create_task(update_predictions_background())
+        logger.info("[BATCH PREDICTION] Background prediction update task started")
+    except Exception as e:
+        logger.warning(f"Failed to start prediction update task: {str(e)}")
     
     # Start daily ETL scheduler (runs at 2 AM daily)
     try:
@@ -1047,10 +1804,18 @@ async def startup_event():
             name='Daily ETL Refresh',
             replace_existing=True
         )
+        # Add prediction update job (runs at 2:30 AM daily, after ETL)
+        scheduler.add_job(
+            update_predictions_daily,
+            CronTrigger(hour=2, minute=30),
+            id='daily_prediction_update',
+            name='Daily Prediction Update',
+            replace_existing=True
+        )
         scheduler.start()
-        logger.info("Daily ETL scheduler started (runs at 2 AM daily)")
+        logger.info("Daily ETL and prediction update schedulers started")
     except Exception as e:
-        logger.warning(f"Failed to start ETL scheduler: {str(e)}")
+        logger.warning(f"Failed to start schedulers: {str(e)}")
 
 
 @app.on_event("shutdown")
@@ -1079,6 +1844,22 @@ async def daily_etl_refresh():
         logger.info(f"Daily ETL refresh completed: {result}")
     except Exception as e:
         logger.error(f"Error in daily ETL refresh: {str(e)}")
+
+
+async def update_predictions_daily():
+    """
+    Daily prediction update task.
+    Calculates and stores ML predictions for all players.
+    Runs after ETL refresh to use latest data.
+    """
+    try:
+        from app.scripts.update_predictions import update_predictions_for_current_gameweek
+        
+        logger.info("[BATCH PREDICTION] Starting daily prediction update...")
+        await update_predictions_for_current_gameweek()
+        logger.info("[BATCH PREDICTION] Daily prediction update completed")
+    except Exception as e:
+        logger.error(f"[BATCH PREDICTION] Error in daily prediction update: {str(e)}")
 
 
 @app.get("/api/entity-resolution/load-map")

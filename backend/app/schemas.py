@@ -189,8 +189,8 @@ class TeamOptimizationRequest(BaseModel):
 
 
 class TransferInfo(BaseModel):
-    in: List[int]
-    out: List[int]
+    transfers_in: List[int]  # Changed from 'in' (Python keyword) to 'transfers_in'
+    transfers_out: List[int]  # Changed from 'out' for consistency
     count: int
     cost: float
 
@@ -367,6 +367,7 @@ class PlayerDisplayData(BaseModel):
     form: float
     xg: Optional[float] = None
     xa: Optional[float] = None
+    xmins: Optional[float] = None
     xcs: Optional[float] = None
     defcon_score: Optional[float] = None
 

@@ -19,17 +19,39 @@ class Player(Base):
     predictions = relationship("Prediction", back_populates="player")
 
 class Prediction(Base):
+    """
+    Batch Prediction table - stores pre-calculated ML predictions for fast API responses.
+    Predictions are calculated in background and stored here, API just reads from this table.
+    """
     __tablename__ = "predictions"
     
     id = Column(Integer, primary_key=True, index=True)
-    player_id = Column(Integer, ForeignKey("players.id"), nullable=False)
-    gameweek = Column(Integer, nullable=False)
-    predicted_points = Column(Float, nullable=False)
-    confidence_score = Column(Float, nullable=False)
-    model_version = Column(String, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    fpl_id = Column(Integer, nullable=False, index=True)  # Use fpl_id for consistency with PlayerGameweekStats
+    gameweek = Column(Integer, nullable=False, index=True)
+    season = Column(String, nullable=False, default="2025-26", index=True)
     
+    # ML Prediction outputs
+    xp = Column(Float, nullable=False)  # expected_points (renamed from predicted_points for clarity)
+    xg = Column(Float, default=0.0)
+    xa = Column(Float, default=0.0)
+    xmins = Column(Float, default=0.0)
+    xcs = Column(Float, default=0.0)
+    defcon_score = Column(Float, default=0.0)
+    confidence_score = Column(Float, nullable=False, default=0.7)  # Model confidence (0.0-1.0)
+    
+    # Metadata
+    model_version = Column(String, nullable=True)
+    calculated_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Optional: Keep relationship for backward compatibility
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=True)
     player = relationship("Player", back_populates="predictions")
+    
+    # Unique constraint: one prediction per player per gameweek per season
+    __table_args__ = (
+        UniqueConstraint('fpl_id', 'gameweek', 'season', name='uq_prediction_fpl_gameweek_season'),
+    )
 
 class ModelPerformance(Base):
     __tablename__ = "model_performance"

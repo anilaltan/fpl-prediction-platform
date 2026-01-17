@@ -3,8 +3,6 @@
 import { useState } from 'react'
 import axios from 'axios'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-
 export default function SolverSandboxPage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<any>(null)
@@ -20,8 +18,9 @@ export default function SolverSandboxPage() {
       setLoading(true)
       setError(null)
       
+      // Use relative path - Next.js will forward to backend via rewrite rule
       // This is a simplified example - in production, you'd fetch actual player data
-      const response = await axios.post(`${API_URL}/api/solver/optimize-team`, {
+      const response = await axios.post('/api/solver/optimize-team', {
         players: [], // Would be populated with actual player data
         current_squad: [],
         budget: config.budget,
