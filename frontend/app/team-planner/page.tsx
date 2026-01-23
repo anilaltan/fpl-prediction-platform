@@ -6,20 +6,20 @@ import { PlanningHeatmap } from '@/components'
 import type { PlayerOptimizationData } from '@/lib/types/api'
 
 export default function TeamPlannerPage() {
-  const [players, setPlayers] = useState<PlayerOptimizationData[]>([])
-  const [selectedPlayers, setSelectedPlayers] = useState<PlayerOptimizationData[]>([])
+  const [selectedPlayers] = useState<PlayerOptimizationData[]>([])
   const [horizonWeeks, setHorizonWeeks] = useState(3)
   const { plan, data, isLoading, error } = useTeamPlan({
-    onSuccess: (result) => {
-      console.log('Planning complete:', result)
+    onSuccess: (_result) => {
+      // Planning complete
     },
-    onError: (err) => {
-      console.error('Planning failed:', err)
+    onError: (_err) => {
+      // Planning failed
     },
   })
 
   const handlePlan = async () => {
     if (selectedPlayers.length < 15) {
+      // eslint-disable-next-line no-alert
       alert('Please select at least 15 players')
       return
     }
@@ -72,7 +72,8 @@ export default function TeamPlannerPage() {
       {!data && !isLoading && (
         <div className="bg-fpl-dark-900 border border-fpl-dark-800 rounded-lg p-8 text-center">
           <p className="text-gray-400">
-            Select players and click "Generate Plan" to see the multi-week planning heatmap.
+            Select players and click &quot;Generate Plan&quot; to see the multi-week planning
+            heatmap.
           </p>
         </div>
       )}

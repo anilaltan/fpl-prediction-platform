@@ -3,9 +3,17 @@
 import { useState } from 'react'
 import axios from 'axios'
 
+interface SolverResult {
+  status: string
+  total_points?: number
+  squads?: Record<string, number[]>
+  budget_used?: Record<string, number>
+}
+
+// eslint-disable-next-line max-lines-per-function
 export default function SolverSandboxPage() {
   const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<any>(null)
+  const [result, setResult] = useState<SolverResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [config, setConfig] = useState({
     budget: 100.0,
@@ -29,8 +37,12 @@ export default function SolverSandboxPage() {
       })
       
       setResult(response.data)
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Optimization failed')
+    } catch (err) {
+      const errorMessage = axios.isAxiosError(err) && err.response?.data?.detail
+        ? err.response.data.detail
+        : 'Optimization failed'
+      setError(errorMessage)
+      // eslint-disable-next-line no-console
       console.error(err)
     } finally {
       setLoading(false)
@@ -114,7 +126,7 @@ export default function SolverSandboxPage() {
             </div>
 
             {/* Weekly Squads */}
-            {result.squads && Object.entries(result.squads).map(([week, squad]: [string, any]) => (
+            {result.squads && Object.entries(result.squads).map(([week, squad]) => (
               <div key={week} className="mb-4">
                 <h3 className="text-xl font-semibold text-white mb-2">Gameweek {week}</h3>
                 <div className="bg-white/5 rounded p-4">

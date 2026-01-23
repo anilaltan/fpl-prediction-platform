@@ -27,10 +27,11 @@ type SortDirection = 'asc' | 'desc'
  * Displays ownership arbitrage analysis in a sortable table
  * Highlights differentials and overvalued players
  */
+// eslint-disable-next-line max-lines-per-function
 export function MarketIntelligenceTable({
   players,
   gameweek,
-  season,
+  season: _season,
 }: MarketIntelligenceTableProps) {
   const [sortField, setSortField] = useState<SortField>('arbitrage_score')
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
@@ -421,9 +422,11 @@ export function MarketIntelligenceTable({
       <div className="bg-blue-900/20 border border-blue-500/50 rounded-lg p-4">
         <h3 className="text-sm font-semibold text-blue-300 mb-2">About Arbitrage Score</h3>
         <p className="text-xs text-gray-300">
-          <strong>Negative score (Differential):</strong> High xP rank but low ownership rank - undervalued by the market.
+          <strong>Negative score (Differential):</strong> High xP rank but low ownership rank -
+          undervalued by the market.
           <br />
-          <strong>Positive score (Overvalued):</strong> Low xP rank but high ownership rank - overvalued by the market.
+          <strong>Positive score (Overvalued):</strong> Low xP rank but high ownership rank -
+          overvalued by the market.
           <br />
           <strong>Formula:</strong> Arbitrage Score = xP Rank - Ownership Rank
         </p>

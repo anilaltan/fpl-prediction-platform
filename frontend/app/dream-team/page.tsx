@@ -21,6 +21,7 @@ interface DreamTeam {
   formation: string
 }
 
+// eslint-disable-next-line max-lines-per-function
 export default function DreamTeamPage() {
   const [dreamTeam, setDreamTeam] = useState<DreamTeam | null>(null)
   const [loading, setLoading] = useState(true)
@@ -92,12 +93,14 @@ export default function DreamTeamPage() {
 
   const organized = organizePlayersByPosition(dreamTeam.starting_xi)
   const formation = dreamTeam.formation.split('-')
-  const defCount = parseInt(formation[0]) || 4
-  const midCount = parseInt(formation[1]) || 4
-  const fwdCount = parseInt(formation[2]) || 2
+  const defCount = parseInt(formation[0], 10) || 4
+  const midCount = parseInt(formation[1], 10) || 4
+  const fwdCount = parseInt(formation[2], 10) || 2
 
   // Select captain (highest xP) and vice-captain (second highest)
-  const sortedByXP = [...dreamTeam.starting_xi].sort((a, b) => b.expected_points - a.expected_points)
+  const sortedByXP = [...dreamTeam.starting_xi].sort(
+    (a, b) => b.expected_points - a.expected_points,
+  )
   const captain = sortedByXP[0]
   const viceCaptain = sortedByXP[1]
 

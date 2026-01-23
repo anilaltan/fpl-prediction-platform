@@ -9,10 +9,10 @@ from .repository import FPLRepository
 from .service import FPLAPIService
 
 __all__ = [
-    'RateLimiter',
-    'FPLHTTPClient',
-    'InMemoryCache',
-    'FPLDataProcessor',
-    'FPLRepository',
-    'FPLAPIService',
+    "RateLimiter",
+    "FPLHTTPClient",
+    "InMemoryCache",
+    "FPLDataProcessor",
+    "FPLRepository",
+    "FPLAPIService",
 ]

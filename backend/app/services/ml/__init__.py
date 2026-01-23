@@ -10,10 +10,10 @@ from .model_loader import ModelLoader
 from .engine import PLEngine
 
 __all__ = [
-    'ModelInterface',
-    'XMinsStrategy',
-    'AttackStrategy',
-    'DefenseStrategy',
-    'ModelLoader',
-    'PLEngine',
+    "ModelInterface",
+    "XMinsStrategy",
+    "AttackStrategy",
+    "DefenseStrategy",
+    "ModelLoader",
+    "PLEngine",
 ]

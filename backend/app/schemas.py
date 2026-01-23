@@ -1,7 +1,7 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional, Dict, List
-from pydantic import Field
 from datetime import datetime
+
 
 # Player Schemas
 class PlayerBase(BaseModel):
@@ -11,17 +11,20 @@ class PlayerBase(BaseModel):
     position: str
     price: float
 
+
 class PlayerCreate(PlayerBase):
     pass
+
 
 class Player(PlayerBase):
     id: int
     total_points: int
     created_at: datetime
     updated_at: Optional[datetime]
-    
+
     class Config:
         from_attributes = True
+
 
 # Prediction Schemas
 class PredictionBase(BaseModel):
@@ -31,15 +34,18 @@ class PredictionBase(BaseModel):
     confidence_score: float
     model_version: str
 
+
 class PredictionCreate(PredictionBase):
     pass
+
 
 class Prediction(PredictionBase):
     id: int
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
+
 
 # Model Performance Schemas
 class ModelPerformanceBase(BaseModel):
@@ -49,15 +55,18 @@ class ModelPerformanceBase(BaseModel):
     rmse: float
     accuracy: float
 
+
 class ModelPerformanceCreate(ModelPerformanceBase):
     pass
+
 
 class ModelPerformance(ModelPerformanceBase):
     id: int
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
+
 
 # API Response Schemas
 class PredictionResponse(BaseModel):
@@ -529,6 +538,7 @@ class ManualMappingRequest(BaseModel):
 
 class OverrideMappingRequest(BaseModel):
     """Request schema for manually overriding low-confidence entity mappings"""
+
     fpl_id: int
     understat_name: Optional[str] = None
     fbref_name: Optional[str] = None
@@ -538,6 +548,7 @@ class OverrideMappingRequest(BaseModel):
 
 class BulkResolutionReport(BaseModel):
     """Response schema for bulk resolution report"""
+
     total_players: int
     matched_count: int
     unmatched_count: int

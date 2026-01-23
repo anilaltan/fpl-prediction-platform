@@ -7,7 +7,7 @@ from .attack_strategy import AttackStrategy
 from .defense_strategy import DefenseStrategy
 
 __all__ = [
-    'XMinsStrategy',
-    'AttackStrategy',
-    'DefenseStrategy',
+    "XMinsStrategy",
+    "AttackStrategy",
+    "DefenseStrategy",
 ]

@@ -7,4 +7,4 @@ All imports should eventually be updated to use: from app.services.fpl import FP
 from app.services.fpl import FPLAPIService
 
 # Re-export for backward compatibility
-__all__ = ['FPLAPIService']
+__all__ = ["FPLAPIService"]

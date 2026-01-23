@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useCallback } from 'react'
 import useSWRMutation from 'swr/mutation'
 import { postFetcher } from '../api/fetcher'
 import type { TeamOptimizationRequest, TeamOptimizationResponse } from '../types/api'

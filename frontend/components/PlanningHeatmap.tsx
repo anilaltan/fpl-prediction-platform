@@ -14,10 +14,11 @@ interface PlanningHeatmapProps {
  * Visualizes multi-period transfer strategy as a heatmap
  * Shows players vs gameweeks with color coding for expected points
  */
+// eslint-disable-next-line max-lines-per-function
 export function PlanningHeatmap({
   plan,
   players,
-  colorBy = 'expected_points',
+  colorBy: _colorBy = 'expected_points',
 }: PlanningHeatmapProps) {
   // Create player map for quick lookup
   const playerMap = useMemo(() => {

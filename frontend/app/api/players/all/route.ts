@@ -43,6 +43,7 @@ export async function GET(request: Request) {
         // Ignore JSON parse errors
       }
       
+      // eslint-disable-next-line no-console
       console.error(`Backend API error (${response.status}): ${errorDetail}`)
       return NextResponse.json(
         { error: errorDetail, status: response.status },
@@ -54,6 +55,7 @@ export async function GET(request: Request) {
     
     // Validate response is an array
     if (!Array.isArray(data)) {
+      // eslint-disable-next-line no-console
       console.error('Backend returned non-array response:', typeof data)
       return NextResponse.json(
         { error: 'Invalid response format from backend', data },
@@ -62,19 +64,21 @@ export async function GET(request: Request) {
     }
     
     return NextResponse.json(data)
-  } catch (error: any) {
+  } catch (error) {
+    // eslint-disable-next-line no-console
     console.error('API route error:', error)
     
     // Handle timeout errors
-    if (error.name === 'TimeoutError' || error.name === 'AbortError') {
+    if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
       return NextResponse.json(
         { error: 'Request timeout - backend took too long to respond' },
         { status: 504 },
       )
     }
     
+    const errorMessage = error instanceof Error ? error.message : 'Internal server error'
     return NextResponse.json(
-      { error: error.message || 'Internal server error' },
+      { error: errorMessage },
       { status: 500 },
     )
   }

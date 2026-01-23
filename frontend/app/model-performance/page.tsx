@@ -10,6 +10,7 @@ const formatNumber = (value: number | null | undefined, decimals: number = 3): s
   return value.toFixed(decimals)
 }
 
+// eslint-disable-next-line max-lines-per-function
 export default function ModelPerformancePage() {
   const { data, isLoading, isError, error } = useModelPerformance({ season: '2025-26' })
 
@@ -57,9 +58,9 @@ export default function ModelPerformancePage() {
         <div className="space-y-4">
           <h2 className="text-xl font-semibold text-white">Backtest Summaries</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {data.summaries.map((summary, idx) => (
+            {data.summaries.map((summary) => (
               <div
-                key={idx}
+                key={`${summary.model_version}-${summary.methodology}`}
                 className="bg-fpl-dark-900 border border-fpl-dark-800 rounded-lg p-6"
               >
                 <div className="flex items-center justify-between mb-4">
@@ -130,8 +131,11 @@ export default function ModelPerformancePage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-fpl-dark-800">
-                  {data.results.map((result, idx) => (
-                    <tr key={idx} className="hover:bg-fpl-dark-800/50 transition-colors">
+                  {data.results.map((result) => (
+                    <tr
+                      key={`${result.gameweek}-${result.model_version}`}
+                      className="hover:bg-fpl-dark-800/50 transition-colors"
+                    >
                       <td className="px-4 py-3 text-sm text-white">{result.gameweek}</td>
                       <td className="px-4 py-3 text-sm text-gray-300">{result.model_version}</td>
                       <td className="px-4 py-3 text-sm text-white">{formatNumber(result.rmse, 3)}</td>
@@ -174,8 +178,11 @@ export default function ModelPerformancePage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-fpl-dark-800">
-                  {data.model_performance.map((record, idx) => (
-                    <tr key={idx} className="hover:bg-fpl-dark-800/50 transition-colors">
+                  {data.model_performance.map((record) => (
+                    <tr
+                      key={`${record.gameweek}-${record.model_version}`}
+                      className="hover:bg-fpl-dark-800/50 transition-colors"
+                    >
                       <td className="px-4 py-3 text-sm text-white">{record.gameweek}</td>
                       <td className="px-4 py-3 text-sm text-gray-300">{record.model_version}</td>
                       <td className="px-4 py-3 text-sm text-white">{formatNumber(record.rmse, 3)}</td>
@@ -195,10 +202,14 @@ export default function ModelPerformancePage() {
       )}
 
       {/* Empty State */}
-      {data.summaries.length === 0 && data.results.length === 0 && data.model_performance.length === 0 && (
+      {data.summaries.length === 0 &&
+        data.results.length === 0 &&
+        data.model_performance.length === 0 && (
         <div className="bg-fpl-dark-900 border border-fpl-dark-800 rounded-lg p-8 text-center">
           <p className="text-gray-400">No model performance data available yet.</p>
-          <p className="text-sm text-gray-500 mt-2">Run backtests to generate performance metrics.</p>
+          <p className="text-sm text-gray-500 mt-2">
+            Run backtests to generate performance metrics.
+          </p>
         </div>
       )}
     </div>

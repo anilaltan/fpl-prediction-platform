@@ -6,19 +6,19 @@ import { PitchView } from '@/components'
 import type { PlayerOptimizationData } from '@/lib/types/api'
 
 export default function TeamOptimizerPage() {
-  const [players, setPlayers] = useState<PlayerOptimizationData[]>([])
-  const [selectedPlayers, setSelectedPlayers] = useState<PlayerOptimizationData[]>([])
+  const [selectedPlayers] = useState<PlayerOptimizationData[]>([])
   const { optimize, data, isLoading, error } = useTeamOptimize({
-    onSuccess: (result) => {
-      console.log('Optimization complete:', result)
+    onSuccess: (_result) => {
+      // Optimization complete
     },
-    onError: (err) => {
-      console.error('Optimization failed:', err)
+    onError: (_err) => {
+      // Optimization failed
     },
   })
 
   const handleOptimize = async () => {
     if (selectedPlayers.length < 15) {
+      // eslint-disable-next-line no-alert
       alert('Please select at least 15 players')
       return
     }
@@ -64,7 +64,8 @@ export default function TeamOptimizerPage() {
       {!data && !isLoading && (
         <div className="bg-fpl-dark-900 border border-fpl-dark-800 rounded-lg p-8 text-center">
           <p className="text-gray-400">
-            Select players and click "Optimize Team" to see the optimized squad visualization.
+            Select players and click &quot;Optimize Team&quot; to see the optimized squad
+            visualization.
           </p>
         </div>
       )}

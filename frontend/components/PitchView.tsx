@@ -15,6 +15,7 @@ interface PitchViewProps {
  * Visualizes a 15-player FPL squad on a football pitch layout
  * Shows starting XI on the pitch and bench players below
  */
+// eslint-disable-next-line max-lines-per-function
 export function PitchView({
   optimization,
   players,
@@ -22,8 +23,14 @@ export function PitchView({
   showBench = true,
 }: PitchViewProps) {
   // Get squad and starting XI for the specified gameweek
-  const squadIds = optimization.squads[gameweek] || []
-  const startingXiIds = optimization.starting_xis[gameweek] || []
+  const squadIds = useMemo(
+    () => optimization.squads[gameweek] || [],
+    [optimization.squads, gameweek],
+  )
+  const startingXiIds = useMemo(
+    () => optimization.starting_xis[gameweek] || [],
+    [optimization.starting_xis, gameweek],
+  )
 
   // Create player map for quick lookup
   const playerMap = useMemo(() => {

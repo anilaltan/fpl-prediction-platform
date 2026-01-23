@@ -11,6 +11,7 @@ export const metadata: Metadata = {
   description: 'Machine Learning powered Fantasy Premier League point predictions',
 }
 
+// eslint-disable-next-line max-lines-per-function
 export default function RootLayout({
   children,
 }: {

@@ -10,4 +10,4 @@ from app.services.ml.strategies.attack_strategy import AttackStrategy as AttackM
 from app.services.ml.strategies.defense_strategy import DefenseStrategy as DefenseModel
 
 # Re-export for backward compatibility
-__all__ = ['PLEngine', 'XMinsModel', 'AttackModel', 'DefenseModel']
+__all__ = ["PLEngine", "XMinsModel", "AttackModel", "DefenseModel"]

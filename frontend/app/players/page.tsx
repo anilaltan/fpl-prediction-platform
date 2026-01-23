@@ -23,6 +23,7 @@ interface Player {
 type SortField = 'expected_points' | 'price' | 'form' | 'name' | 'ownership_percent' | null
 type SortDirection = 'asc' | 'desc'
 
+// eslint-disable-next-line max-lines-per-function
 export default function PlayersPage() {
   const [players, setPlayers] = useState<Player[]>([])
   const [searchTerm, setSearchTerm] = useState('')
@@ -104,6 +105,7 @@ export default function PlayersPage() {
       const response = await axios.get(`/api/players/all?t=${timestamp}`)
       setPlayers(response.data)
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error('Error fetching players:', error)
       // Show error state
       setPlayers([])
@@ -237,7 +239,9 @@ export default function PlayersPage() {
                 max="16.0"
                 step="0.5"
                 value={maxPriceFilter}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMaxPriceFilter(parseFloat(e.target.value))}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setMaxPriceFilter(parseFloat(e.target.value))
+                }
                 className="w-32"
               />
               <span className="text-sm text-white font-medium min-w-[3rem]">

@@ -34,6 +34,7 @@ interface GameweekInfo {
   is_next: boolean
 }
 
+// eslint-disable-next-line max-lines-per-function
 export default function DashboardPage() {
   const [players, setPlayers] = useState<Player[]>([])
   const [fixtures, setFixtures] = useState<Fixture[]>([])
@@ -58,7 +59,13 @@ export default function DashboardPage() {
         const events = bootstrapResponse.data?.events || []
         
         // Find next gameweek (is_next === true)
-        const nextGW = events.find((e: { is_next?: boolean; id?: number; name?: string; deadline_time?: string }) => e.is_next === true)
+        interface GameweekEvent {
+          is_next?: boolean
+          id?: number
+          name?: string
+          deadline_time?: string
+        }
+        const nextGW = events.find((e: GameweekEvent) => e.is_next === true)
         if (nextGW) {
           setNextGameweek({
             id: nextGW.id,
@@ -69,18 +76,23 @@ export default function DashboardPage() {
           
           // Fetch fixtures for next gameweek
           try {
-            const fixturesResponse = await axios.get(`/api/fpl/fixtures?gameweek=${nextGW.id}&future_only=true`)
+            const fixturesResponse = await axios.get(
+              `/api/fpl/fixtures?gameweek=${nextGW.id}&future_only=true`,
+            )
             if (fixturesResponse.data?.fixtures) {
               setFixtures(fixturesResponse.data.fixtures)
             }
           } catch (err) {
+            // eslint-disable-next-line no-console
             console.error('Error fetching fixtures:', err)
           }
         }
       } catch (err) {
+        // eslint-disable-next-line no-console
         console.error('Error fetching bootstrap data:', err)
       }
     } catch (error) {
+      // eslint-disable-next-line no-console
       console.error('Error fetching dashboard data:', error)
     } finally {
       setLoading(false)

@@ -1,0 +1,11 @@
+{
+  "frontend/**/*.{js,jsx,ts,tsx}": [
+    "docker exec -t fpl_frontend npx eslint --fix",
+    "docker exec -t fpl_frontend npx prettier --write"
+  ],
+  "backend/**/*.py": [
+    "docker exec -t fpl_backend ruff check --fix",
+    "docker exec -t fpl_backend ruff format",
+    "docker exec -t fpl_backend mypy"
+  ]
+}
