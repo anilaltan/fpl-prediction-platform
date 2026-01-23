@@ -18,7 +18,7 @@ class FPLDataProcessor:
     from raw FPL API responses to structured formats.
     """
     
-    def __init__(self, data_cleaning: Optional[DataCleaningService] = None):
+    def __init__(self, data_cleaning: Optional[DataCleaningService] = None) -> None:
         """
         Initialize data processor.
         

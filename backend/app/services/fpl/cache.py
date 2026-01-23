@@ -4,7 +4,7 @@ Strict LRU caching logic for FPL API responses.
 """
 import time
 import asyncio
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Callable, Awaitable
 import logging
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ class CacheEntry:
         ttl_seconds: Time-to-live in seconds
     """
     
-    def __init__(self, data: Any, ttl_seconds: int):
+    def __init__(self, data: Any, ttl_seconds: int) -> None:
         """
         Initialize cache entry.
         
@@ -54,7 +54,7 @@ class InMemoryCache:
     BOOTSTRAP_CACHE_TTL = 24 * 60 * 60  # 24 hours
     ELEMENT_SUMMARY_CACHE_TTL = 60 * 60  # 1 hour
     
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize in-memory cache."""
         self._cache: Dict[str, CacheEntry] = {}
         self._lock = asyncio.Lock()
@@ -109,7 +109,7 @@ class InMemoryCache:
     async def get_or_set(
         self,
         key: str,
-        value_factory: callable,
+        value_factory: Callable[[], Awaitable[Any]],
         ttl_seconds: int
     ) -> Any:
         """

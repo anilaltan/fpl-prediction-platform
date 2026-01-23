@@ -1,7 +1,12 @@
 // SWR fetcher function for API calls
 // Handles errors and provides consistent error handling
 
-export const fetcher = async <T = any>(url: string): Promise<T> => {
+interface FetchError extends Error {
+  status?: number
+  info?: unknown
+}
+
+export const fetcher = async <T = unknown>(url: string): Promise<T> => {
   const res = await fetch(url, {
     headers: {
       'Content-Type': 'application/json',
@@ -9,10 +14,10 @@ export const fetcher = async <T = any>(url: string): Promise<T> => {
   })
 
   if (!res.ok) {
-    const error = new Error('An error occurred while fetching the data.')
+    const error = new Error('An error occurred while fetching the data.') as FetchError
     // Attach extra info to the error object
-    ;(error as any).status = res.status
-    ;(error as any).info = await res.json().catch(() => ({}))
+    error.status = res.status
+    error.info = await res.json().catch(() => ({}))
     throw error
   }
 
@@ -20,9 +25,9 @@ export const fetcher = async <T = any>(url: string): Promise<T> => {
 }
 
 // POST fetcher for mutations
-export const postFetcher = async <T = any>(
+export const postFetcher = async <T = unknown>(
   url: string,
-  data: any,
+  data: unknown,
 ): Promise<T> => {
   const res = await fetch(url, {
     method: 'POST',
@@ -33,9 +38,9 @@ export const postFetcher = async <T = any>(
   })
 
   if (!res.ok) {
-    const error = new Error('An error occurred while posting the data.')
-    ;(error as any).status = res.status
-    ;(error as any).info = await res.json().catch(() => ({}))
+    const error = new Error('An error occurred while posting the data.') as FetchError
+    error.status = res.status
+    error.info = await res.json().catch(() => ({}))
     throw error
   }
 

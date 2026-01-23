@@ -9,7 +9,6 @@ from datetime import datetime
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session
 import os
 from dotenv import load_dotenv
 
@@ -27,7 +26,7 @@ class ETLService:
     Implements async UPSERT operations for efficient data loading.
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         # Use async engine for better performance
         database_url = os.getenv("DATABASE_URL", "postgresql://fpl_user:fpl_password@localhost:5432/fpl_db")
         # Convert to async URL
@@ -586,6 +585,6 @@ class ETLService:
         }
         return position_map.get(element_type, 'MID')
     
-    async def close(self):
+    async def close(self) -> None:
         """Close async engine"""
         await self.async_engine.dispose()

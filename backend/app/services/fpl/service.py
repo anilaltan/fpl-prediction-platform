@@ -43,7 +43,7 @@ class FPLAPIService:
     # External API URLs
     FBREF_BASE_URL = "https://fbref.com"
     
-    def __init__(self, rate_limit_delay: float = 0.1):
+    def __init__(self, rate_limit_delay: float = 0.1) -> None:
         """
         Initialize FPL API service with modular components.
         

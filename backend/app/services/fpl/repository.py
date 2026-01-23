@@ -18,7 +18,7 @@ class FPLRepository:
     from business logic. All database operations go through this class.
     """
     
-    def __init__(self, etl_service: Optional[ETLService] = None):
+    def __init__(self, etl_service: Optional[ETLService] = None) -> None:
         """
         Initialize repository.
         

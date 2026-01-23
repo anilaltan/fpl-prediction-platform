@@ -58,7 +58,7 @@ export default function DashboardPage() {
         const events = bootstrapResponse.data?.events || []
         
         // Find next gameweek (is_next === true)
-        const nextGW = events.find((e: any) => e.is_next === true)
+        const nextGW = events.find((e: { is_next?: boolean; id?: number; name?: string; deadline_time?: string }) => e.is_next === true)
         if (nextGW) {
           setNextGameweek({
             id: nextGW.id,
@@ -110,8 +110,12 @@ export default function DashboardPage() {
     : null
 
   const getDifficultyColor = (difficulty: number) => {
-    if (difficulty <= 2) {return 'text-fpl-green-500 bg-fpl-green-500/20'}
-    if (difficulty === 3) {return 'text-yellow-500 bg-yellow-500/20'}
+    if (difficulty <= 2) {
+      return 'text-fpl-green-500 bg-fpl-green-500/20'
+    }
+    if (difficulty === 3) {
+      return 'text-yellow-500 bg-yellow-500/20'
+    }
     return 'text-red-500 bg-red-500/20'
   }
 

@@ -77,8 +77,12 @@ export function MarketIntelligenceTable({
           | number
           | string
 
-        if (aValue === undefined || aValue === null) {aValue = 0}
-        if (bValue === undefined || bValue === null) {bValue = 0}
+        if (aValue === undefined || aValue === null) {
+          aValue = 0
+        }
+        if (bValue === undefined || bValue === null) {
+          bValue = 0
+        }
 
         if (typeof aValue === 'string' && typeof bValue === 'string') {
           return sortDirection === 'asc'
@@ -154,10 +158,18 @@ export function MarketIntelligenceTable({
 
   // Get arbitrage score color
   const getArbitrageScoreColor = (score: number) => {
-    if (score < -20) {return 'text-green-400 font-bold'} // Strong differential
-    if (score < -10) {return 'text-green-300'} // Moderate differential
-    if (score > 20) {return 'text-red-400 font-bold'} // Strong overvalued
-    if (score > 10) {return 'text-red-300'} // Moderate overvalued
+    if (score < -20) {
+      return 'text-green-400 font-bold'
+    } // Strong differential
+    if (score < -10) {
+      return 'text-green-300'
+    } // Moderate differential
+    if (score > 20) {
+      return 'text-red-400 font-bold'
+    } // Strong overvalued
+    if (score > 10) {
+      return 'text-red-300'
+    } // Moderate overvalued
     return 'text-gray-300' // Neutral
   }
 

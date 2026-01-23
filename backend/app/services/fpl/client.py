@@ -24,7 +24,7 @@ class RateLimiter:
         consecutive_errors: Number of consecutive errors
     """
     
-    def __init__(self, max_requests: int = 60, window_seconds: int = 60):
+    def __init__(self, max_requests: int = 60, window_seconds: int = 60) -> None:
         """
         Initialize rate limiter.
         
@@ -96,7 +96,7 @@ class FPLHTTPClient:
     
     BASE_URL = "https://fantasy.premierleague.com/api"
     
-    def __init__(self, rate_limit_delay: float = 0.1):
+    def __init__(self, rate_limit_delay: float = 0.1) -> None:
         """
         Initialize HTTP client.
         
