@@ -1,4 +1,4 @@
-"use client"
+'use client'
 
 import { useState } from 'react'
 import axios from 'axios'
@@ -10,7 +10,7 @@ export default function SolverSandboxPage() {
   const [config, setConfig] = useState({
     budget: 100.0,
     horizon_weeks: 3,
-    free_transfers: 1
+    free_transfers: 1,
   })
 
   const handleOptimize = async () => {
@@ -25,7 +25,7 @@ export default function SolverSandboxPage() {
         current_squad: [],
         budget: config.budget,
         horizon_weeks: config.horizon_weeks,
-        free_transfers: config.free_transfers
+        free_transfers: config.free_transfers,
       })
       
       setResult(response.data)

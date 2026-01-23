@@ -79,6 +79,8 @@ class FormAlphaResponse(BaseModel):
     optimal_alpha: float
     rmse: float
     lookback_weeks: int
+    converged: Optional[bool] = False
+    iterations: Optional[int] = 0
 
 
 class FDRFitRequest(BaseModel):
@@ -90,6 +92,39 @@ class FDRResponse(BaseModel):
     attack_strength: float
     defense_strength: float
     home_advantage: float
+
+
+class StochasticFDRRequest(BaseModel):
+    team: str
+    opponent: str
+    is_home: bool
+    n_simulations: Optional[int] = 10000
+
+
+class StochasticFDRResponse(BaseModel):
+    fdr_mean: float
+    fdr_std: float
+    win_prob: float
+    draw_prob: float
+    loss_prob: float
+    clean_sheet_prob: float
+    expected_goals_for: float
+    expected_goals_against: float
+    goal_distribution: Dict
+
+
+class FDRComparisonResponse(BaseModel):
+    correlation: float
+    mean_absolute_error: float
+    r_squared: float
+    comparison_data: List[Dict]
+
+
+class FDRVerificationResponse(BaseModel):
+    correlation_goals_for: float
+    correlation_goals_against: float
+    prediction_accuracy: float
+    n_fixtures: int
 
 
 class DefConFeaturesResponse(BaseModel):
@@ -492,6 +527,29 @@ class ManualMappingRequest(BaseModel):
     fbref_name: Optional[str] = None
 
 
+class OverrideMappingRequest(BaseModel):
+    """Request schema for manually overriding low-confidence entity mappings"""
+    fpl_id: int
+    understat_name: Optional[str] = None
+    fbref_name: Optional[str] = None
+    fpl_name: Optional[str] = None
+    canonical_name: Optional[str] = None
+
+
+class BulkResolutionReport(BaseModel):
+    """Response schema for bulk resolution report"""
+    total_players: int
+    matched_count: int
+    unmatched_count: int
+    high_confidence_count: int
+    low_confidence_count: int
+    manually_verified_count: int
+    low_confidence_mappings: List[Dict]
+    unmatched_players: List[Dict]
+    match_accuracy: float
+    mappings_stored: int
+
+
 # Data Cleaning Schemas
 class DataCleaningRequest(BaseModel):
     player_data: Dict
@@ -529,3 +587,61 @@ class DefConMetricsResponse(BaseModel):
     interventions_per_90: float
     passes_per_90: float
     defcon_score: float
+
+
+# Market Intelligence Schemas
+class MarketIntelligencePlayer(BaseModel):
+    player_id: int
+    name: str
+    position: str
+    team: str
+    price: float
+    xp: float
+    ownership: float
+    xp_rank: int
+    ownership_rank: int
+    arbitrage_score: float
+    category: str  # 'Differential', 'Overvalued', or 'Neutral'
+
+
+class MarketIntelligenceResponse(BaseModel):
+    gameweek: int
+    season: str
+    players: List[MarketIntelligencePlayer]
+    total_players: int
+    differentials_count: int
+    overvalued_count: int
+    neutral_count: int
+
+
+# Team Planning Schemas
+class TeamPlanRequest(BaseModel):
+    players: List[PlayerOptimizationData]
+    current_squad: Optional[List[int]] = None
+    locked_players: Optional[List[int]] = None
+    excluded_players: Optional[List[int]] = None
+    budget: float = 100.0
+    horizon_weeks: int = 3
+    free_transfers: int = 1
+
+
+class TransferStrategy(BaseModel):
+    gameweek: int
+    transfers_in: List[int]
+    transfers_out: List[int]
+    transfer_count: int
+    transfer_cost: float
+    expected_points_gain: float
+
+
+class TeamPlanResponse(BaseModel):
+    status: str
+    optimal: bool
+    horizon_weeks: int
+    squads: Dict[int, List[int]]
+    starting_xis: Dict[int, List[int]]
+    transfer_strategy: List[TransferStrategy]
+    total_expected_points: float
+    total_transfer_cost: float
+    net_expected_points: float
+    budget_used: Dict[int, float]

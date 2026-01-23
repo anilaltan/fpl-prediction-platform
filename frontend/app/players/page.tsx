@@ -52,7 +52,7 @@ export default function PlayersPage() {
       const term = searchTerm.toLowerCase()
       filtered = filtered.filter(p =>
         p.name.toLowerCase().includes(term) ||
-        p.team.toLowerCase().includes(term)
+        p.team.toLowerCase().includes(term),
       )
     }
 
@@ -76,8 +76,8 @@ export default function PlayersPage() {
         let bValue: number | string = b[sortField as keyof Player] as number | string
 
         // Handle optional fields
-        if (aValue === undefined || aValue === null) aValue = 0
-        if (bValue === undefined || bValue === null) bValue = 0
+        if (aValue === undefined || aValue === null) {aValue = 0}
+        if (bValue === undefined || bValue === null) {bValue = 0}
 
         if (typeof aValue === 'string' && typeof bValue === 'string') {
           return sortDirection === 'asc'
@@ -137,9 +137,9 @@ export default function PlayersPage() {
   }
 
   const getXPColor = (xp: number) => {
-    if (xp >= 6) return 'text-fpl-green-500 font-bold'
-    if (xp >= 4) return 'text-fpl-green-400 font-semibold'
-    if (xp >= 2) return 'text-yellow-400'
+    if (xp >= 6) {return 'text-fpl-green-500 font-bold'}
+    if (xp >= 4) {return 'text-fpl-green-400 font-semibold'}
+    if (xp >= 2) {return 'text-yellow-400'}
     return 'text-red-400'
   }
 
@@ -158,8 +158,8 @@ export default function PlayersPage() {
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-center">
           <div className="relative">
-            <div className="animate-spin rounded-full h-16 w-16 border-4 border-fpl-dark-800 border-t-fpl-green-500 mx-auto"></div>
-            <div className="absolute top-0 left-1/2 transform -translate-x-1/2 animate-spin rounded-full h-16 w-16 border-4 border-transparent border-r-fpl-purple-500" style={{ animationDuration: '1.5s' }}></div>
+            <div className="animate-spin rounded-full h-16 w-16 border-4 border-fpl-dark-800 border-t-fpl-green-500 mx-auto" />
+            <div className="absolute top-0 left-1/2 transform -translate-x-1/2 animate-spin rounded-full h-16 w-16 border-4 border-transparent border-r-fpl-purple-500" style={{ animationDuration: '1.5s' }} />
           </div>
           <p className="mt-6 text-gray-400 text-lg">Loading players...</p>
           <p className="mt-2 text-gray-500 text-sm">Fetching latest predictions...</p>

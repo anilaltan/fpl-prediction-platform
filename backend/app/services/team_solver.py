@@ -266,14 +266,17 @@ class TeamSolver:
             # Check solution status
             if prob.status != pulp.LpStatusOptimal:
                 logger.warning(f"Optimization status: {pulp.LpStatus[prob.status]}")
+                weeks = list(range(1, self.horizon_weeks + 1))
                 return {
                     'status': pulp.LpStatus[prob.status],
                     'optimal': False,
-                    'squads': {},
-                    'starting_xis': {},
-                    'transfers': {},
+                    'squads': {w: [] for w in weeks},
+                    'starting_xis': {w: [] for w in weeks},
+                    'transfers': {w: {'transfers_in': [], 'transfers_out': [], 'count': 0, 'cost': 0} for w in weeks},
+                    'points_breakdown': {w: {'expected_points': 0.0, 'transfer_cost': 0.0, 'net_points': 0.0} for w in weeks},
                     'total_points': 0.0,
-                    'total_transfers': 0
+                    'total_transfers': 0,
+                    'budget_used': {w: 0.0 for w in weeks}
                 }
             
             # Extract solution
@@ -330,8 +333,8 @@ class TeamSolver:
             ]
             
             transfers[w] = {
-                'in': transfers_in,
-                'out': transfers_out,
+                'transfers_in': transfers_in,
+                'transfers_out': transfers_out,
                 'count': len(transfers_in) + len(transfers_out),
                 'cost': max(0, (len(transfers_in) + len(transfers_out) - self.free_transfers) * self.transfer_penalty)
             }

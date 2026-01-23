@@ -21,7 +21,7 @@ export async function GET(request: Request) {
     if (!response.ok) {
       return NextResponse.json(
         { error: 'Backend request failed', status: response.status },
-        { status: response.status }
+        { status: response.status },
       )
     }
     
@@ -31,7 +31,7 @@ export async function GET(request: Request) {
     console.error('API route error:', error)
     return NextResponse.json(
       { error: error.message || 'Internal server error' },
-      { status: 500 }
+      { status: 500 },
     )
   }
 }

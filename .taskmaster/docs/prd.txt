@@ -1,0 +1,1377 @@
+<context>
+# Overview  
+The Autonomous FPL Asset Management system is a fully automated decision-support platform that identifies market inefficiencies in the Fantasy Premier League (FPL) ecosystem. Modern football analytics has shifted from intuitive scouting to stochastic modeling, yet most FPL managers still rely on herd mentality and ownership bias when making team selections. This system integrates process-oriented metrics (Expected Goals, Expected Assists) with advanced optimization algorithms to outperform the market and maximize long-term points while strictly adhering to budget and positional constraints.
+
+The platform serves serious FPL players who want to leverage data science and machine learning to gain a competitive edge. By treating FPL team selection as a Multi-Period Constrained Resource Optimization Problem, the system provides actionable recommendations that consider fixture difficulty, player form decay, defensive contributions, and captaincy optimization—all while maintaining a "Zero-Constant" philosophy where every coefficient is derived from data rather than intuition.
+
+The value proposition centers on exploiting ownership arbitrage: identifying overvalued assets (high ownership, declining expected points) and replacing them with undervalued differentials before price changes occur. This "Smart Money" strategy acts as a swing trader in the FPL market, maximizing expected value over 3-to-5-week horizons while penalizing transfer costs.
+
+# Core Features  
+
+## Dynamic Data Ingestion & Entity Resolution
+**What it does**: Aggregates disparate data sources (Official FPL API, Understat, FBref) into a unified time-series database with automated entity resolution to handle naming discrepancies across databases.
+
+**Why it's important**: Accurate data is the foundation of all predictions. Without proper entity resolution, a player like "Bruno Fernandes" might be treated as a different entity than "Bruno Borges Fernandes" across data sources, leading to incomplete feature sets and poor model performance.
+
+**How it works**: Real-time extraction from the Official FPL RESTful API (bootstrap-static for static data, element-summary for historical depth) combined with process-oriented metrics from Understat and FBref. Automated mapping algorithms (FPL-ID-Map) resolve naming discrepancies using fuzzy matching and manual override capabilities.
+
+## Self-Adaptive Feature Engineering
+**What it does**: Treats traditional fixed weights (form decay rates, fixture difficulty) as learnable parameters optimized through Bayesian methods, rather than using hardcoded constants.
+
+**Why it's important**: Traditional models use fixed decay rates (e.g., α = 0.5) for form calculations, but optimal decay rates vary by player position, fixture congestion, and other contextual factors. By learning these parameters, the model adapts to changing patterns in the FPL ecosystem.
+
+**How it works**: 
+- Dynamic Decay Optimization uses Bayesian Optimization to find the α that minimizes RMSE of previous N weeks' predictions
+- Stochastic Fixture Difficulty (FDR 2.0) models fixture difficulty as a hidden variable using Poisson Regression, calculating relative attacking/defensive strength based on historical xGC (Expected Goals Conceded) and Possession %
+- DefCon Integration engineers features to capture 2025/26 rule changes where players earn points for blocks, tackles, and interceptions
+
+## Component-Based Predictive Engine
+**What it does**: Rather than predicting total points directly (which is noisy), the engine models atomic components of a player's score: expected minutes, expected goals, expected assists, expected clean sheets, and defensive contributions.
+
+**Why it's important**: Total points are a noisy target variable. By decomposing points into their constituent parts, the model can learn more stable relationships and provide interpretable insights into why a player is expected to score well.
+
+**How it works**:
+- xMins Prediction: Random Forest or XGBoost classifier predicts probability of starting (P_start) based on rest days, European fixture congestion, and manager rotation patterns
+- Hücum (Attack) & Savunma (Defense) Models: Gradient Boosting (XGBoost/LightGBM) models learn non-linear relationships between player position, opponent ID, and away-game variance
+- Stochastic Point Formula: xP = (xMins/90) · [(xG · P_Goal) + (xA · P_Assist) + (xCS · P_CS) + DefCon_Pts]
+
+## Multi-Period Optimization Engine
+**What it does**: Treats FPL team selection as a Multi-Period Constrained Resource Optimization Problem, using Integer Linear Programming (ILP) to find the global optimum team selection over a 3-to-5-week horizon.
+
+**Why it's important**: FPL is not a single-week game. Optimal team selection requires balancing immediate points with future value, transfer costs, and fixture swings. The system optimizes across multiple gameweeks simultaneously, avoiding suboptimal short-term decisions.
+
+**How it works**:
+- Objective Function: Maximizes total expected points over horizon H while penalizing transfer costs (C_trans)
+- Integer Linear Programming: Utilizes solvers like PuLP or Highs to navigate trillions of combinations under constraints (budget 100M, max 3 per team, positional requirements)
+- Captain/Vice-Captain Optimization: Optimizes captaincy not just on highest xP, but on expected value considering probability of captain not playing (P_start) and vice-captain stepping in
+
+## Ownership Arbitrage & Market Intelligence
+**What it does**: Identifies "Overvalued Assets" (high ownership, declining xP trends) and recommends "Differentials" (undervalued assets) before price changes occur, acting as a swing trader in the FPL market.
+
+**Why it's important**: FPL is a market with inefficiencies. High ownership doesn't always correlate with optimal expected value. By identifying these inefficiencies early, managers can gain an edge before the market corrects.
+
+**How it works**: The system tracks ownership trends, price movements, and expected points trajectories. When a high-ownership player's xP declines, the system flags them as overvalued and suggests differential replacements with higher expected value but lower ownership.
+
+## Look-Ahead Bias Mitigation & Backtesting
+**What it does**: Implements rigorous validation using Expanding Window methodology, ensuring no future data leaks into training sets and providing realistic performance estimates.
+
+**Why it's important**: Machine learning models are prone to look-ahead bias, where future information inadvertently influences past predictions. This leads to inflated performance metrics that don't translate to real-world results.
+
+**How it works**: Validation is performed using Expanding Window method—training on GW1...GW_n data to predict GW_{n+1}, ensuring temporal ordering is preserved. This provides realistic backtesting results that reflect actual deployment performance.
+
+# User Experience  
+
+## User Personas
+
+### The Data-Driven Manager
+- **Profile**: Experienced FPL player with background in statistics, data science, or quantitative analysis
+- **Goals**: Maximize long-term expected value, outperform the market through systematic approach
+- **Pain Points**: Manual data collection is time-consuming, difficult to optimize across multiple gameweeks simultaneously, hard to identify market inefficiencies
+- **Needs**: Transparent model outputs, ability to understand why recommendations are made, confidence intervals on predictions
+
+### The Competitive Manager
+- **Profile**: Serious FPL player aiming for top 10K finish, willing to invest time in research
+- **Goals**: Gain competitive edge, make informed transfer decisions, optimize captaincy choices
+- **Pain Points**: Information overload from multiple sources, difficulty synthesizing conflicting advice, uncertainty about optimal team structure
+- **Needs**: Clear recommendations with rationale, fixture difficulty insights, ownership trend analysis
+
+### The Time-Constrained Manager
+- **Profile**: FPL enthusiast with limited time for research, wants automated decision support
+- **Goals**: Make optimal decisions quickly, avoid missing deadlines, maintain competitive team
+- **Pain Points**: Can't keep up with all player news, fixture changes, injury updates
+- **Needs**: Automated alerts, one-click team optimization, clear action items
+
+## Key User Flows
+
+### Flow 1: Weekly Team Optimization
+1. User logs into platform (or receives automated email notification)
+2. System displays current team with expected points for upcoming gameweek
+3. User reviews optimization recommendations (transfers, captaincy, bench order)
+4. System shows expected points impact of each recommendation
+5. User accepts/rejects recommendations with one-click actions
+6. System updates team and provides confirmation with new expected points
+
+### Flow 2: Multi-Week Planning
+1. User navigates to "Planning" section
+2. System displays 3-to-5-week horizon with fixture difficulty heatmap
+3. User reviews projected team value and expected points trajectory
+4. System suggests optimal transfer strategy (e.g., "Transfer out Player X in GW15, bring in Player Y for GW16-18")
+5. User approves strategy, system schedules transfers
+6. System sends reminders before each scheduled transfer
+
+### Flow 3: Market Intelligence Dashboard
+1. User opens "Market Intelligence" tab
+2. System displays ownership trends, price movements, and xP trajectories
+3. User identifies overvalued assets (high ownership, declining xP)
+4. System suggests differential replacements with higher expected value
+5. User reviews risk/reward analysis (expected points gain vs. ownership risk)
+6. User executes transfer if convinced
+
+### Flow 4: Model Transparency & Debugging
+1. User questions a recommendation (e.g., "Why is Player X recommended?")
+2. System displays feature breakdown: xMins probability, xG, xA, xCS, DefCon points
+3. User reviews historical predictions vs. actuals for similar players
+4. System shows confidence intervals and model uncertainty
+5. User can override recommendation with manual selection
+
+## UI/UX Considerations
+
+### Dashboard Design
+- **Primary View**: Current team with expected points for next gameweek (large, prominent)
+- **Secondary Views**: Multi-week planning, market intelligence, historical performance
+- **Visual Hierarchy**: Expected points displayed prominently, supporting metrics in expandable sections
+- **Color Coding**: Green for positive expected value, red for negative, yellow for neutral/warnings
+
+### Responsive Design
+- Mobile-first approach: Core optimization features must work on mobile devices
+- Desktop enhancements: Advanced analytics, multi-week planning, detailed charts
+- Progressive disclosure: Basic recommendations visible immediately, advanced metrics on demand
+
+### Transparency & Trust
+- Always show "why": Every recommendation includes rationale (e.g., "High xG vs. weak defense")
+- Confidence indicators: Display prediction intervals, not just point estimates
+- Historical accuracy: Show model performance over previous gameweeks
+- Override capabilities: Users can always manually adjust recommendations
+
+### Performance & Real-Time Updates
+- Fast load times: Dashboard should load in < 2 seconds
+- Real-time data: Automatic updates when new FPL data is available
+- Background processing: Heavy computations run asynchronously, user notified when complete
+- Offline capability: Basic team view available offline, syncs when connection restored
+</context>
+<PRD>
+# Technical Architecture  
+
+## System Components
+
+### Layer 1: Data Ingestion & Entity Resolution
+**Component: FPL API Client**
+- **Responsibility**: Real-time extraction from Official FPL RESTful API
+- **Endpoints**: 
+  - `bootstrap-static`: Static data (teams, players, positions, events)
+  - `element-summary/{player_id}`: Historical performance depth
+  - `fixtures`: Upcoming fixture information
+- **Rate Limiting**: Implements DefCon rules with exponential backoff
+- **Caching Strategy**: Static data cached for 24 hours, dynamic data cached for 1 hour
+- **Error Handling**: Graceful degradation with fallback to cached data
+
+**Component: External Data Integrators**
+- **Understat Integration**: Scrapes/APIs for Expected Goals (xG), Expected Assists (xA), Non-Penalty xG (NPxG)
+- **FBref Integration**: Possession %, defensive metrics, advanced statistics
+- **Update Frequency**: Daily batch updates, with real-time triggers for major events (injuries, transfers)
+
+**Component: Entity Resolution Engine**
+- **Responsibility**: Maps player names across different data sources
+- **Algorithm**: Fuzzy string matching (Levenshtein distance) + manual override database
+- **Storage**: FPL-ID-Map table with mappings: `{fpl_id, understat_name, fbref_name, canonical_name}`
+- **Validation**: Automated checks for unmapped entities, alerts for manual review
+
+**Component: Time-Series Database**
+- **Storage**: PostgreSQL 15 with TimescaleDB extension for time-series optimization
+- **Schema**: 
+  - `player_stats`: Time-series of player metrics (xG, xA, minutes, points) indexed by (player_id, gameweek)
+  - `team_stats`: Time-series of team metrics (xGC, possession, defensive strength)
+  - `fixtures`: Historical and future fixtures with difficulty ratings
+- **Partitioning**: By season and gameweek for query performance
+
+### Layer 2: Self-Adaptive Feature Engineering
+**Component: Dynamic Decay Optimizer**
+- **Responsibility**: Finds optimal decay rate (α) for form calculations using Bayesian Optimization
+- **Input**: Historical player performance data, target variable (actual points)
+- **Output**: Optimized α per player position/context
+- **Algorithm**: Gaussian Process-based Bayesian Optimization (scikit-optimize)
+- **Validation**: Cross-validation on expanding windows to prevent overfitting
+
+**Component: Stochastic Fixture Difficulty Calculator (FDR 2.0)**
+- **Responsibility**: Models fixture difficulty as hidden variable using Poisson Regression
+- **Input**: Historical xGC, possession %, home/away indicators, team strength ratings
+- **Output**: Expected goals conceded (xGC) and expected goals scored (xGS) for each fixture
+- **Model**: Poisson Regression with team-specific attack/defense parameters
+- **Update Frequency**: Recalibrated weekly as new data arrives
+
+**Component: DefCon Feature Engineer**
+- **Responsibility**: Engineers features capturing defensive contributions (blocks, tackles, interceptions)
+- **Input**: Player position, historical defensive actions, opponent attacking strength
+- **Output**: Expected DefCon points per gameweek
+- **Model**: Position-specific regression models (defenders/midfielders have higher DefCon potential)
+
+**Component: Feature Store**
+- **Storage**: Redis cache for frequently accessed features, PostgreSQL for historical features
+- **Schema**: `feature_cache` table with columns: `{player_id, gameweek, feature_name, feature_value, computed_at}`
+- **TTL**: Features expire after 7 days, recomputed on-demand if stale
+
+### Layer 3: Predictive Engine (Component-Based ML)
+**Component: xMins Predictor**
+- **Model Type**: Random Forest or XGBoost Classifier (binary: starts/doesn't start)
+- **Features**: 
+  - Rest days since last game
+  - European fixture congestion (Champions League, Europa League)
+  - Manager rotation patterns (historical start probability by fixture type)
+  - Injury status, suspension status
+  - Recent form (minutes in last 3 games)
+- **Output**: P_start (probability of starting), expected minutes if starting
+- **Training**: Weekly retraining on expanding window of historical data
+
+**Component: Attack Model (Hücum)**
+- **Model Type**: Gradient Boosting (XGBoost/LightGBM)
+- **Features**:
+  - Player position, historical xG, xA
+  - Opponent defensive strength (xGC)
+  - Home/away indicator
+  - Recent form (xG, xA in last 5 games with decay)
+  - Team attacking strength
+- **Output**: Expected Goals (xG), Expected Assists (xA) for next gameweek
+- **Training**: Position-specific models (forwards vs. midfielders have different feature importance)
+
+**Component: Defense Model (Savunma)**
+- **Model Type**: Gradient Boosting (XGBoost/LightGBM)
+- **Features**:
+  - Player position, team defensive strength
+  - Opponent attacking strength (xGS)
+  - Home/away indicator
+  - Recent clean sheet history
+  - Goalkeeper quality (for defenders)
+- **Output**: Expected Clean Sheet probability (P_CS), Expected Goals Conceded (xGC)
+- **Training**: Position-specific models (defenders vs. goalkeepers)
+
+**Component: Point Aggregator**
+- **Responsibility**: Combines component predictions into expected points (xP)
+- **Formula**: xP = (xMins/90) · [(xG · P_Goal) + (xA · P_Assist) + (xCS · P_CS) + DefCon_Pts]
+- **Constants**: P_Goal = 4-6 (position-dependent), P_Assist = 3, P_CS = 4 (defenders/GK)
+- **Output**: Expected points per gameweek for each player
+
+**Component: Model Registry**
+- **Storage**: MLflow or custom model versioning system
+- **Versioning**: Models tagged by training date, gameweek range, performance metrics
+- **A/B Testing**: Support for running multiple model versions in parallel, comparing performance
+
+### Layer 4: Multi-Period Optimization Engine
+**Component: Optimization Problem Formulator**
+- **Responsibility**: Converts FPL team selection into Integer Linear Programming (ILP) problem
+- **Decision Variables**: 
+  - Binary: x[i,t] = 1 if player i is in team at time t
+  - Binary: y[i,j,t] = 1 if transfer from player i to j at time t
+- **Objective Function**: Maximize Σ(xP[i,t] · x[i,t]) - Σ(C_trans · y[i,j,t])
+- **Constraints**:
+  - Budget: Σ(price[i,t] · x[i,t]) ≤ 100M for all t
+  - Team limit: Σ(x[i,t] for i in team_j) ≤ 3 for all teams j, all t
+  - Position requirements: Σ(x[i,t] for i in position_k) = required_count[k] for all positions k
+  - Transfer limits: Σ(y[i,j,t] for all i,j) ≤ free_transfers[t] + (wildcard/bench_boost if available)
+
+**Component: ILP Solver Interface**
+- **Solver**: PuLP (Python) with Highs solver backend (open-source, fast)
+- **Alternative**: Gurobi or CPLEX for commercial deployments (if budget allows)
+- **Optimization**: Pre-solve reductions, constraint tightening, warm starts from previous solution
+- **Timeout**: 60-second limit per optimization, fallback to greedy heuristic if timeout
+
+**Component: Captain/Vice-Captain Optimizer**
+- **Responsibility**: Selects optimal captain and vice-captain considering P_start probabilities
+- **Logic**: Expected value = (P_start[captain] · xP[captain] · 2) + ((1 - P_start[captain]) · P_start[vc] · xP[vc] · 2)
+- **Integration**: Runs as post-processing step after main team optimization
+
+**Component: Strategy Generator**
+- **Responsibility**: Generates multi-week transfer strategies
+- **Output**: Recommended transfers for each gameweek in horizon (3-5 weeks)
+- **Visualization**: Timeline view showing when to bring in/out players based on fixture swings
+
+### Supporting Infrastructure
+**Component: Backtesting Framework**
+- **Methodology**: Expanding Window validation
+- **Process**: 
+  1. Train on GW1...GW_n
+  2. Predict GW_{n+1}
+  3. Compare predictions to actuals
+  4. Expand window: train on GW1...GW_{n+1}, predict GW_{n+2}
+  5. Repeat for all available gameweeks
+- **Metrics**: RMSE, MAE, correlation coefficient, rank correlation
+- **Storage**: Backtest results stored in `backtest_results` table for analysis
+
+**Component: API Layer (FastAPI)**
+- **Endpoints**:
+  - `GET /api/v1/team/optimize`: Returns optimized team for next gameweek
+  - `GET /api/v1/team/plan`: Returns multi-week transfer strategy
+  - `GET /api/v1/players/{player_id}/predictions`: Returns xP breakdown for player
+  - `GET /api/v1/market/intelligence`: Returns ownership arbitrage opportunities
+  - `POST /api/v1/team/update`: Updates user's current team
+- **Authentication**: JWT tokens, rate limiting per user
+- **Documentation**: OpenAPI/Swagger auto-generated
+
+**Component: Frontend (Next.js)**
+- **Pages**:
+  - `/dashboard`: Main team optimization view
+  - `/planning`: Multi-week planning interface
+  - `/market`: Market intelligence dashboard
+  - `/analytics`: Historical performance, model accuracy
+- **State Management**: React Context + SWR for server state
+- **Real-time Updates**: WebSocket connection for live data updates
+
+## Data Models
+
+### Core Entities
+
+**Player**
+```python
+{
+    "id": int,  # FPL player ID
+    "name": str,
+    "position": str,  # "GK", "DEF", "MID", "FWD"
+    "team_id": int,
+    "price": float,  # Current price in millions
+    "ownership": float,  # Percentage ownership
+    "canonical_name": str  # Resolved name across data sources
+}
+```
+
+**PlayerStats (Time-Series)**
+```python
+{
+    "player_id": int,
+    "gameweek": int,
+    "season": str,  # "2024-25"
+    "minutes": int,
+    "goals": int,
+    "assists": int,
+    "clean_sheets": int,
+    "points": int,
+    "xG": float,  # From Understat
+    "xA": float,  # From Understat
+    "NPxG": float,
+    "xMins": float,  # Predicted minutes
+    "xP": float,  # Expected points (predicted)
+    "defcon_points": int,  # Blocks + tackles + interceptions
+    "timestamp": datetime
+}
+```
+
+**Team**
+```python
+{
+    "id": int,  # FPL team ID
+    "name": str,
+    "short_name": str,
+    "strength_attack": int,  # FPL strength rating
+    "strength_defense": int,
+    "strength_overall": int
+}
+```
+
+**TeamStats (Time-Series)**
+```python
+{
+    "team_id": int,
+    "gameweek": int,
+    "season": str,
+    "xGC": float,  # Expected goals conceded
+    "xGS": float,  # Expected goals scored
+    "possession": float,  # Percentage
+    "clean_sheets": int,
+    "goals_conceded": int,
+    "timestamp": datetime
+}
+```
+
+**Fixture**
+```python
+{
+    "id": int,
+    "home_team_id": int,
+    "away_team_id": int,
+    "gameweek": int,
+    "season": str,
+    "kickoff_time": datetime,
+    "finished": bool,
+    "home_score": int | None,
+    "away_score": int | None,
+    "fdr_home": float,  # Fixture difficulty rating (computed)
+    "fdr_away": float,
+    "xGC_home": float,  # Expected goals conceded by home team
+    "xGC_away": float,
+    "xGS_home": float,
+    "xGS_away": float
+}
+```
+
+**OptimizationResult**
+```python
+{
+    "gameweek": int,
+    "team": List[PlayerSelection],  # 15 players
+    "captain_id": int,
+    "vice_captain_id": int,
+    "expected_points": float,
+    "transfers": List[Transfer],  # Recommended transfers
+    "transfer_cost": int,  # Points cost
+    "optimization_timestamp": datetime,
+    "solver_status": str  # "optimal", "timeout", "infeasible"
+}
+```
+
+**PlayerSelection**
+```python
+{
+    "player_id": int,
+    "position": str,
+    "is_starting": bool,
+    "bench_order": int | None,  # 1-4 if on bench
+    "expected_points": float,
+    "xMins": float,
+    "xG": float,
+    "xA": float,
+    "xCS": float,
+    "defcon_points": float
+}
+```
+
+**Transfer**
+```python
+{
+    "transfer_out_id": int,
+    "transfer_in_id": int,
+    "gameweek": int,
+    "reason": str,  # "Fixture swing", "Injury", "Form decline"
+    "expected_points_gain": float,
+    "cost": int  # Transfer cost in points
+}
+```
+
+### Database Schema (PostgreSQL)
+
+```sql
+-- Core tables
+CREATE TABLE players (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    position VARCHAR(3) NOT NULL CHECK (position IN ('GK', 'DEF', 'MID', 'FWD')),
+    team_id INTEGER REFERENCES teams(id),
+    price DECIMAL(5,2),
+    ownership DECIMAL(5,2),
+    canonical_name VARCHAR(255),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE player_stats (
+    id SERIAL PRIMARY KEY,
+    player_id INTEGER REFERENCES players(id),
+    gameweek INTEGER NOT NULL,
+    season VARCHAR(9) NOT NULL,
+    minutes INTEGER DEFAULT 0,
+    goals INTEGER DEFAULT 0,
+    assists INTEGER DEFAULT 0,
+    clean_sheets INTEGER DEFAULT 0,
+    points INTEGER DEFAULT 0,
+    xg DECIMAL(6,3),
+    xa DECIMAL(6,3),
+    npxg DECIMAL(6,3),
+    xmins DECIMAL(5,2),
+    xp DECIMAL(6,2),
+    defcon_points INTEGER DEFAULT 0,
+    timestamp TIMESTAMP DEFAULT NOW(),
+    UNIQUE(player_id, gameweek, season)
+);
+
+-- TimescaleDB hypertable for time-series optimization
+SELECT create_hypertable('player_stats', 'timestamp');
+
+CREATE TABLE teams (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    short_name VARCHAR(10),
+    strength_attack INTEGER,
+    strength_defense INTEGER,
+    strength_overall INTEGER
+);
+
+CREATE TABLE team_stats (
+    id SERIAL PRIMARY KEY,
+    team_id INTEGER REFERENCES teams(id),
+    gameweek INTEGER NOT NULL,
+    season VARCHAR(9) NOT NULL,
+    xgc DECIMAL(6,3),
+    xgs DECIMAL(6,3),
+    possession DECIMAL(5,2),
+    clean_sheets INTEGER DEFAULT 0,
+    goals_conceded INTEGER DEFAULT 0,
+    timestamp TIMESTAMP DEFAULT NOW(),
+    UNIQUE(team_id, gameweek, season)
+);
+
+SELECT create_hypertable('team_stats', 'timestamp');
+
+CREATE TABLE fixtures (
+    id INTEGER PRIMARY KEY,
+    home_team_id INTEGER REFERENCES teams(id),
+    away_team_id INTEGER REFERENCES teams(id),
+    gameweek INTEGER NOT NULL,
+    season VARCHAR(9) NOT NULL,
+    kickoff_time TIMESTAMP,
+    finished BOOLEAN DEFAULT FALSE,
+    home_score INTEGER,
+    away_score INTEGER,
+    fdr_home DECIMAL(4,2),
+    fdr_away DECIMAL(4,2),
+    xgc_home DECIMAL(6,3),
+    xgc_away DECIMAL(6,3),
+    xgs_home DECIMAL(6,3),
+    xgs_away DECIMAL(6,3)
+);
+
+CREATE TABLE entity_mappings (
+    id SERIAL PRIMARY KEY,
+    fpl_id INTEGER REFERENCES players(id),
+    understat_name VARCHAR(255),
+    fbref_name VARCHAR(255),
+    canonical_name VARCHAR(255) NOT NULL,
+    confidence_score DECIMAL(3,2),  -- 0.0 to 1.0
+    manually_verified BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE optimization_results (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER,  -- If multi-user support
+    gameweek INTEGER NOT NULL,
+    season VARCHAR(9) NOT NULL,
+    team_json JSONB NOT NULL,  -- Array of PlayerSelection objects
+    captain_id INTEGER,
+    vice_captain_id INTEGER,
+    expected_points DECIMAL(6,2),
+    transfers_json JSONB,  -- Array of Transfer objects
+    transfer_cost INTEGER,
+    solver_status VARCHAR(20),
+    optimization_timestamp TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE model_versions (
+    id SERIAL PRIMARY KEY,
+    model_type VARCHAR(50) NOT NULL,  -- "xmins", "attack", "defense"
+    version VARCHAR(20) NOT NULL,
+    training_gameweeks VARCHAR(100),  -- "1-15" or similar
+    performance_metrics JSONB,  -- RMSE, MAE, etc.
+    model_path VARCHAR(255),  -- Path to saved model file
+    trained_at TIMESTAMP DEFAULT NOW(),
+    is_active BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE backtest_results (
+    id SERIAL PRIMARY KEY,
+    model_version_id INTEGER REFERENCES model_versions(id),
+    gameweek INTEGER NOT NULL,
+    season VARCHAR(9) NOT NULL,
+    predicted_xp JSONB,  -- {player_id: xp} mapping
+    actual_points JSONB,  -- {player_id: points} mapping
+    rmse DECIMAL(6,3),
+    mae DECIMAL(6,3),
+    correlation DECIMAL(5,3),
+    backtested_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Indexes for performance
+CREATE INDEX idx_player_stats_player_gw ON player_stats(player_id, gameweek, season);
+CREATE INDEX idx_player_stats_timestamp ON player_stats(timestamp);
+CREATE INDEX idx_team_stats_team_gw ON team_stats(team_id, gameweek, season);
+CREATE INDEX idx_fixtures_gw ON fixtures(gameweek, season);
+CREATE INDEX idx_fixtures_teams ON fixtures(home_team_id, away_team_id);
+```
+
+## APIs and Integrations
+
+### External APIs
+
+**Official FPL API**
+- **Base URL**: `https://fantasy.premierleague.com/api`
+- **Endpoints**:
+  - `GET /bootstrap-static`: Static data (teams, players, events)
+  - `GET /element-summary/{element_id}`: Player-specific historical data
+  - `GET /fixtures`: Fixture information
+- **Rate Limiting**: DefCon rules - exponential backoff, max 60 requests/minute
+- **Authentication**: None required (public API)
+- **Data Format**: JSON
+- **Update Frequency**: Real-time during gameweeks, daily during off-season
+
+**Understat API/Scraping**
+- **Purpose**: Expected Goals (xG), Expected Assists (xA), Non-Penalty xG
+- **Method**: Web scraping (beautifulsoup4) or API if available
+- **Rate Limiting**: Respectful scraping (1 request/second, robots.txt compliance)
+- **Data Format**: HTML tables or JSON
+- **Update Frequency**: Daily batch updates
+
+**FBref Integration**
+- **Purpose**: Possession %, advanced defensive metrics
+- **Method**: Web scraping (selenium/beautifulsoup4)
+- **Rate Limiting**: Respectful scraping
+- **Data Format**: HTML tables
+- **Update Frequency**: Weekly batch updates
+
+### Internal API (FastAPI)
+
+**Base URL**: `https://api.fpl-platform.com/api/v1`
+
+**Authentication**: JWT Bearer tokens
+```python
+Headers: {
+    "Authorization": "Bearer <jwt_token>",
+    "Content-Type": "application/json"
+}
+```
+
+**Endpoints**:
+
+1. **Team Optimization**
+   - `GET /team/optimize?gameweek={gw}&horizon={weeks}`
+   - Returns: `OptimizationResult` JSON
+   - Query params: `gameweek` (default: next), `horizon` (default: 1)
+
+2. **Multi-Week Planning**
+   - `GET /team/plan?start_gw={gw}&horizon={weeks}`
+   - Returns: `List[OptimizationResult]` for each gameweek in horizon
+
+3. **Player Predictions**
+   - `GET /players/{player_id}/predictions?gameweek={gw}`
+   - Returns: Detailed xP breakdown (xMins, xG, xA, xCS, DefCon)
+
+4. **Market Intelligence**
+   - `GET /market/intelligence?gameweek={gw}`
+   - Returns: List of overvalued/undervalued players with arbitrage opportunities
+
+5. **Team Update**
+   - `POST /team/update`
+   - Body: `{"team": [player_ids], "captain_id": int, "vice_captain_id": int}`
+   - Returns: Updated team with new expected points
+
+6. **Model Performance**
+   - `GET /analytics/model-performance?model_type={type}&season={season}`
+   - Returns: Backtest results, accuracy metrics
+
+## Infrastructure Requirements
+
+### Compute Resources
+- **Backend API**: 2 CPU cores, 4GB RAM (FastAPI, Python 3.11)
+- **ML Training**: 4 CPU cores, 8GB RAM (for model retraining jobs)
+- **Database**: PostgreSQL 15 with TimescaleDB, 2 CPU cores, 4GB RAM
+- **Cache**: Redis, 1 CPU core, 2GB RAM (for feature store, session storage)
+- **Frontend**: Next.js, 2 CPU cores, 2GB RAM
+
+### Storage Requirements
+- **Database**: 50GB initial allocation, auto-scaling (time-series data grows ~1GB per season)
+- **Model Storage**: 10GB for ML model files (versioned)
+- **Cache**: 5GB Redis for hot data
+- **Logs**: 20GB for application logs (rotated)
+
+### Network & Security
+- **HTTPS**: Required for all API endpoints (Let's Encrypt certificates)
+- **Rate Limiting**: Per-user rate limits (100 requests/minute for API)
+- **CORS**: Configured for frontend domain only
+- **Database**: Private network, no public access
+- **Backup**: Daily automated backups, 30-day retention
+
+### Monitoring & Observability
+- **Application Monitoring**: Prometheus + Grafana for metrics
+- **Logging**: Structured JSON logs (ELK stack or CloudWatch)
+- **Error Tracking**: Sentry for exception tracking
+- **Health Checks**: `/health` endpoint for load balancer
+- **Alerts**: Email/Slack notifications for:
+  - Model prediction errors > threshold
+  - API response time > 1 second
+  - Database connection failures
+  - External API failures (FPL API, Understat)
+
+### Deployment
+- **Containerization**: Docker containers for all services
+- **Orchestration**: Docker Compose for development, Kubernetes for production (optional)
+- **CI/CD**: GitHub Actions for automated testing and deployment
+- **Environment Variables**: Managed via `.env` files (development) or secrets manager (production)
+
+# Development Roadmap  
+
+## Phase 0: Foundation & Data Infrastructure (MVP Foundation)
+
+### MVP Requirements
+**Goal**: Establish core data pipeline and basic prediction capability that can be demonstrated end-to-end.
+
+**Scope**:
+1. **FPL API Integration**
+   - Implement FPL API client with rate limiting (DefCon rules)
+   - Extract bootstrap-static and element-summary data
+   - Store in PostgreSQL database with basic schema
+   - Implement daily batch update job
+
+2. **Entity Resolution (Basic)**
+   - Create entity_mappings table
+   - Implement fuzzy matching algorithm (Levenshtein distance)
+   - Manual override interface for unmapped players
+   - Validation checks for data completeness
+
+3. **Basic Feature Engineering**
+   - Calculate simple form metrics (average points last 5 games)
+   - Implement basic fixture difficulty (using FPL strength ratings)
+   - Store features in feature_cache table
+
+4. **Simple Predictive Model**
+   - Train basic XGBoost model predicting total points (not component-based yet)
+   - Use simple features: form, fixture difficulty, price, position
+   - Implement expanding window validation framework
+   - Store model versions in model_versions table
+
+5. **Basic Optimization (Single Gameweek)**
+   - Implement ILP formulation for single gameweek (no multi-period yet)
+   - Use PuLP with Highs solver
+   - Basic constraints: budget, team limits, positions
+   - Return optimized team with expected points
+
+6. **Minimal API & Frontend**
+   - FastAPI endpoint: `GET /api/v1/team/optimize`
+   - Next.js page: `/dashboard` showing optimized team
+   - Display: Team list with expected points, basic transfer recommendations
+
+**Exit Criteria**:
+- Can ingest FPL data daily without errors
+- Can predict expected points for all players (even if simple model)
+- Can optimize team for single gameweek
+- Frontend displays optimized team
+- Basic backtesting shows model performance metrics
+
+**Delivers**: Working prototype that demonstrates core value proposition (automated team optimization) even if predictions are basic.
+
+## Phase 1: Enhanced Predictions & Process Metrics (Improving Accuracy)
+
+### Scope
+1. **External Data Integration**
+   - Integrate Understat data (xG, xA, NPxG) via scraping or API
+   - Integrate FBref data (possession %, defensive metrics)
+   - Implement entity resolution for external data sources
+   - Daily batch updates for external data
+
+2. **Component-Based Predictive Engine**
+   - Implement xMins predictor (Random Forest/XGBoost classifier)
+   - Implement Attack Model (Hücum) predicting xG and xA
+   - Implement Defense Model (Savunma) predicting xCS probability
+   - Implement DefCon feature engineering for 2025/26 rules
+   - Aggregate components into xP using stochastic formula
+
+3. **Self-Adaptive Feature Engineering**
+   - Implement Dynamic Decay Optimizer using Bayesian Optimization
+   - Implement Stochastic Fixture Difficulty (FDR 2.0) using Poisson Regression
+   - Replace hardcoded constants with learned parameters
+   - Weekly recalibration of decay rates and FDR
+
+4. **Model Registry & Versioning**
+   - Implement MLflow or custom model versioning
+   - Support A/B testing of model versions
+   - Automated model retraining pipeline (weekly)
+   - Model performance tracking and comparison
+
+5. **Enhanced API & Frontend**
+   - Add endpoint: `GET /players/{id}/predictions` with detailed breakdown
+   - Add endpoint: `GET /analytics/model-performance`
+   - Frontend: Show xP breakdown (xMins, xG, xA, xCS, DefCon) for each player
+   - Frontend: Model accuracy dashboard with historical performance
+
+**Exit Criteria**:
+- Component-based predictions show improved accuracy vs. Phase 0
+- External data integrated and entity resolution working
+- Self-adaptive features show better performance than fixed constants
+- Models retrain automatically on weekly schedule
+- Frontend displays detailed prediction breakdowns
+
+**Delivers**: Significantly improved prediction accuracy through component-based modeling and process metrics, with transparency into why predictions are made.
+
+## Phase 2: Multi-Period Optimization & Market Intelligence (Strategic Planning)
+
+### Scope
+1. **Multi-Period Optimization Engine**
+   - Extend ILP formulation to 3-to-5-week horizon
+   - Implement transfer cost penalties in objective function
+   - Generate optimal transfer strategy across multiple gameweeks
+   - Handle wildcard and bench boost chips in optimization
+
+2. **Captain/Vice-Captain Optimization**
+   - Implement C/VC selection considering P_start probabilities
+   - Expected value calculation: (P_start[captain] · xP[captain] · 2) + fallback logic
+   - Integration with main optimization engine
+
+3. **Market Intelligence & Ownership Arbitrage**
+   - Track ownership trends over time
+   - Identify overvalued assets (high ownership, declining xP)
+   - Identify undervalued differentials (low ownership, high xP)
+   - Calculate expected value gain from arbitrage opportunities
+
+4. **Planning Interface**
+   - API endpoint: `GET /team/plan` for multi-week strategies
+   - Frontend: `/planning` page with fixture difficulty heatmap
+   - Visualize transfer strategy timeline (when to bring in/out players)
+   - Show projected team value and expected points trajectory
+
+5. **Market Dashboard**
+   - API endpoint: `GET /market/intelligence`
+   - Frontend: `/market` page showing ownership trends, price movements
+   - Highlight arbitrage opportunities with risk/reward analysis
+
+**Exit Criteria**:
+- Can optimize team across 3-to-5-week horizon
+- Transfer strategies generated and displayed
+- Market intelligence identifies clear arbitrage opportunities
+- Frontend planning interface fully functional
+- C/VC optimization shows improved expected value vs. simple highest xP selection
+
+**Delivers**: Strategic planning capabilities that help users think beyond single gameweeks, with market intelligence to exploit inefficiencies.
+
+## Phase 3: Advanced Features & Production Hardening (Scale & Polish)
+
+### Scope
+1. **Advanced Optimization Features**
+   - Support for all FPL chips (wildcard, free hit, bench boost, triple captain)
+   - Transfer timing optimization (when to make transfers to avoid price changes)
+   - Bench order optimization (automatic substitution logic)
+
+2. **Real-Time Updates & Notifications**
+   - WebSocket connection for live data updates
+   - Email/SMS notifications for:
+     - Injury news affecting team
+     - Price change alerts
+     - Optimal transfer windows
+     - Deadline reminders
+
+3. **Advanced Analytics & Insights**
+   - Historical performance analysis (how did optimized teams perform?)
+   - What-if scenarios (compare different transfer strategies)
+   - Player comparison tool (side-by-side xP breakdown)
+   - Fixture difficulty calendar with swing identification
+
+4. **Production Hardening**
+   - Comprehensive error handling and logging
+   - Performance optimization (caching, query optimization)
+   - Load testing and scaling preparation
+   - Security audit and penetration testing
+   - Documentation (API docs, user guides)
+
+5. **Multi-User Support (if applicable)**
+   - User authentication and authorization
+   - Per-user team storage
+   - League comparison features
+   - Social features (share strategies, compare with friends)
+
+**Exit Criteria**:
+- All FPL chips supported in optimization
+- Real-time updates working reliably
+- Advanced analytics provide actionable insights
+- System handles production load (100+ concurrent users)
+- Security and performance meet production standards
+
+**Delivers**: Production-ready platform with advanced features, real-time capabilities, and comprehensive analytics.
+
+## Future Enhancements (Post-MVP)
+
+1. **Machine Learning Improvements**
+   - Deep learning models (LSTM for time-series, Transformer architectures)
+   - Ensemble methods combining multiple model types
+   - Transfer learning from previous seasons
+   - Reinforcement learning for transfer strategy optimization
+
+2. **Advanced Market Features**
+   - Price prediction models (when will player prices rise/fall?)
+   - Ownership prediction (forecast future ownership trends)
+   - Market sentiment analysis (social media, news impact)
+
+3. **Personalization**
+   - User risk tolerance profiles (conservative vs. aggressive strategies)
+   - Custom optimization objectives (maximize rank vs. maximize points)
+   - Learning from user overrides (what did user change and why?)
+
+4. **Integration & Automation**
+   - Direct FPL API integration (auto-apply transfers via official API if available)
+   - Integration with FPL content creators (import their teams for comparison)
+   - Browser extension for one-click team updates
+
+5. **Community & Social**
+   - Public leaderboard of optimized teams
+   - Strategy sharing and discussion forums
+   - Expert analysis integration (combine ML predictions with expert insights)
+
+# Logical Dependency Chain
+
+## Foundation Layer (Phase 0 - Must Build First)
+
+**Data Infrastructure**
+- **FPL API Client**: No dependencies. Provides raw data for all downstream systems.
+- **Database Schema**: Depends on FPL API Client (to understand data structure). Foundation for all data storage.
+- **Entity Resolution Engine**: Depends on Database Schema. Must exist before external data integration.
+
+**Basic Prediction**
+- **Simple Feature Engineering**: Depends on [Database Schema, FPL API Client]. Creates features from raw data.
+- **Basic Predictive Model**: Depends on [Simple Feature Engineering]. Trains on features, produces predictions.
+- **Model Storage**: Depends on [Basic Predictive Model]. Stores model versions for deployment.
+
+**Basic Optimization**
+- **ILP Problem Formulator (Single GW)**: Depends on [Basic Predictive Model, Database Schema]. Needs predictions and player data.
+- **ILP Solver Interface**: Depends on [ILP Problem Formulator]. Solves the formulated problem.
+
+**API & Frontend Foundation**
+- **FastAPI Backend**: Depends on [ILP Solver Interface, Database Schema]. Exposes optimization via API.
+- **Next.js Frontend (Basic)**: Depends on [FastAPI Backend]. Displays optimized teams.
+
+**Rationale**: Without data, nothing works. Without predictions, optimization is impossible. Without optimization, there's no value to display. This creates the minimal viable chain: Data → Predictions → Optimization → Display.
+
+## Enhancement Layer (Phase 1 - Builds on Foundation)
+
+**External Data Integration**
+- **Understat Integration**: Depends on [Entity Resolution Engine, Database Schema]. Needs entity mapping to link players.
+- **FBref Integration**: Depends on [Entity Resolution Engine, Database Schema]. Same entity resolution requirement.
+
+**Advanced Feature Engineering**
+- **Dynamic Decay Optimizer**: Depends on [Database Schema, Basic Predictive Model]. Needs historical data and baseline model for comparison.
+- **Stochastic FDR Calculator**: Depends on [Database Schema, Understat Integration]. Needs team stats and xG data.
+- **DefCon Feature Engineer**: Depends on [Database Schema]. Needs player position and historical defensive data.
+
+**Component-Based ML**
+- **xMins Predictor**: Depends on [Database Schema, Advanced Feature Engineering]. Needs features and training data.
+- **Attack Model (Hücum)**: Depends on [Understat Integration, Advanced Feature Engineering]. Needs xG/xA data and features.
+- **Defense Model (Savunma)**: Depends on [Database Schema, Advanced Feature Engineering]. Needs clean sheet history and features.
+- **Point Aggregator**: Depends on [xMins Predictor, Attack Model, Defense Model, DefCon Feature Engineer]. Combines all components.
+
+**Model Registry**
+- **Model Versioning System**: Depends on [Component-Based ML models]. Stores and manages model versions.
+
+**Enhanced API & Frontend**
+- **Detailed Predictions Endpoint**: Depends on [Point Aggregator]. Returns component breakdowns.
+- **Model Performance Endpoint**: Depends on [Model Versioning System, Backtesting Framework]. Shows accuracy metrics.
+- **Frontend Enhancements**: Depends on [Enhanced API endpoints]. Displays detailed breakdowns.
+
+**Rationale**: External data and advanced features improve prediction accuracy. Component-based modeling requires all components to exist before aggregation. Enhanced API/Frontend requires improved predictions to display.
+
+## Strategic Layer (Phase 2 - Requires Accurate Predictions)
+
+**Multi-Period Optimization**
+- **Multi-Period ILP Formulator**: Depends on [Point Aggregator, ILP Problem Formulator]. Needs accurate multi-gameweek predictions and extends single-GW formulation.
+- **Transfer Strategy Generator**: Depends on [Multi-Period ILP Formulator]. Creates transfer timeline from optimization results.
+
+**Captain/Vice-Captain Optimization**
+- **C/VC Optimizer**: Depends on [xMins Predictor, Point Aggregator]. Needs P_start probabilities and xP values.
+
+**Market Intelligence**
+- **Ownership Tracker**: Depends on [Database Schema, FPL API Client]. Tracks ownership over time.
+- **Arbitrage Identifier**: Depends on [Ownership Tracker, Point Aggregator]. Compares ownership vs. expected value.
+
+**Planning Interface**
+- **Planning API Endpoint**: Depends on [Transfer Strategy Generator, Multi-Period ILP Formulator]. Returns multi-week strategies.
+- **Market Intelligence Endpoint**: Depends on [Arbitrage Identifier]. Returns arbitrage opportunities.
+- **Frontend Planning Pages**: Depends on [Planning API, Market Intelligence API]. Displays strategies and market insights.
+
+**Rationale**: Multi-period optimization requires accurate predictions (Phase 1) and extends single-GW logic (Phase 0). Market intelligence needs ownership data and predictions. Planning interface needs optimization and market data.
+
+## Production Layer (Phase 3 - Requires Complete System)
+
+**Advanced Optimization Features**
+- **Chip Support**: Depends on [Multi-Period ILP Formulator]. Extends optimization to handle chips.
+- **Transfer Timing Optimizer**: Depends on [Market Intelligence, Multi-Period Optimization]. Considers price changes.
+- **Bench Order Optimizer**: Depends on [xMins Predictor, Point Aggregator]. Optimizes automatic substitutions.
+
+**Real-Time Updates**
+- **WebSocket Server**: Depends on [FastAPI Backend, Database Schema]. Provides live updates.
+- **Notification System**: Depends on [Database Schema, Point Aggregator]. Sends alerts based on predictions.
+
+**Advanced Analytics**
+- **Historical Performance Analyzer**: Depends on [Backtesting Framework, Database Schema]. Analyzes past optimization results.
+- **What-If Scenarios**: Depends on [Multi-Period ILP Formulator]. Runs optimization with different inputs.
+- **Player Comparison Tool**: Depends on [Point Aggregator]. Compares player predictions side-by-side.
+
+**Production Hardening**
+- **Error Handling & Logging**: Depends on [All previous components]. Adds resilience to entire system.
+- **Performance Optimization**: Depends on [All previous components]. Optimizes existing functionality.
+- **Security & Scaling**: Depends on [All previous components]. Hardens for production use.
+
+**Rationale**: Advanced features extend existing functionality. Real-time updates and analytics require complete system. Production hardening applies to everything built so far.
+
+## Getting to Usable Frontend Quickly
+
+**Critical Path for Visible Value**:
+1. **Phase 0 Foundation** (Week 1-2):
+   - FPL API Client + Database Schema → Basic data in system
+   - Simple Feature Engineering + Basic Model → Can predict points
+   - ILP Formulator + Solver → Can optimize team
+   - **FastAPI + Basic Frontend** → **USER CAN SEE OPTIMIZED TEAM** ✅
+
+**Why This Works**: Even with simple predictions, showing an optimized team demonstrates core value. User sees immediate benefit, even if predictions improve later.
+
+**Progressive Enhancement**:
+- Phase 1: Frontend shows detailed breakdowns (xMins, xG, xA) → More transparency
+- Phase 2: Frontend shows multi-week planning → Strategic value
+- Phase 3: Frontend shows real-time updates → Live experience
+
+**Atomic Feature Scoping**: Each phase delivers independently valuable features:
+- Phase 0: "Optimize my team for next gameweek" (works, even if basic)
+- Phase 1: "Show me why this player is recommended" (adds transparency)
+- Phase 2: "Plan my transfers for next 5 weeks" (adds strategy)
+- Phase 3: "Alert me when my captain gets injured" (adds automation)
+
+# Risks and Mitigations  
+
+## Technical Challenges
+
+### Risk: Entity Resolution Accuracy
+**Impact**: High - Incorrect player mappings lead to incomplete feature sets and poor model performance.
+
+**Likelihood**: Medium - Player name variations are common (e.g., "Bruno Fernandes" vs. "Bruno Borges Fernandes").
+
+**Mitigation**: 
+- Implement fuzzy matching with confidence scores
+- Manual override interface for unmapped entities
+- Validation checks flagging players with missing external data
+- Regular audits comparing FPL data to external sources
+
+**Fallback**: If automated resolution fails, prioritize manual mapping for top 100 players (by ownership/price) and use FPL-only data for others.
+
+### Risk: External Data Source Reliability
+**Impact**: High - Understat and FBref are third-party sources that may change structure, go offline, or restrict access.
+
+**Likelihood**: Medium - Web scraping is fragile, APIs may change.
+
+**Mitigation**:
+- Implement robust error handling with graceful degradation
+- Cache external data aggressively (24-hour TTL)
+- Monitor external source health (daily checks)
+- Fallback to FPL-only predictions if external data unavailable
+- Consider paid API access if available (more reliable than scraping)
+
+**Fallback**: System continues operating with FPL-only data (reduced accuracy but still functional).
+
+### Risk: ILP Solver Performance
+**Impact**: Medium - Optimization may timeout or fail to find optimal solution for complex multi-period problems.
+
+**Likelihood**: Medium - ILP problems with 500+ players and 5-week horizon have trillions of combinations.
+
+**Mitigation**:
+- Pre-solve reductions (eliminate players with very low xP)
+- Constraint tightening (reduce search space)
+- Warm starts from previous solution
+- Timeout handling (60-second limit, fallback to greedy heuristic)
+- Consider approximate solvers (genetic algorithms) for very large problems
+
+**Fallback**: Greedy heuristic that selects highest xP players within constraints (suboptimal but fast).
+
+### Risk: Model Overfitting
+**Impact**: High - Overfitted models perform well on training data but poorly on new gameweeks.
+
+**Likelihood**: Medium - Small dataset (38 gameweeks per season) relative to feature space.
+
+**Mitigation**:
+- Strict expanding window validation (no future data leakage)
+- Regularization in models (L1/L2 penalties, early stopping)
+- Feature selection to reduce dimensionality
+- Ensemble methods (average multiple models)
+- Cross-validation within training window
+
+**Fallback**: Simpler models with fewer features if overfitting detected (lower accuracy but more stable).
+
+### Risk: Look-Ahead Bias in Validation
+**Impact**: High - Inflated performance metrics don't reflect real-world deployment accuracy.
+
+**Likelihood**: Low if careful, but easy to introduce accidentally.
+
+**Mitigation**:
+- Strict temporal ordering in expanding window validation
+- Automated checks preventing future data in training sets
+- Separate validation and test sets (hold out final 5 gameweeks)
+- Document validation methodology clearly
+
+**Fallback**: If bias detected, retrain models with corrected methodology and report corrected metrics.
+
+## MVP Scope Risks
+
+### Risk: MVP Too Complex
+**Impact**: High - Delays first usable version, reduces user feedback early.
+
+**Likelihood**: Medium - Temptation to include advanced features in MVP.
+
+**Mitigation**:
+- Strict Phase 0 scope (basic predictions, single-GW optimization only)
+- Defer component-based ML to Phase 1
+- Defer multi-period optimization to Phase 2
+- Focus on "works end-to-end" over "works perfectly"
+
+**Fallback**: Further simplify MVP (remove external data integration, use even simpler model).
+
+### Risk: MVP Too Simple
+**Impact**: Medium - Users don't see value, abandon platform.
+
+**Likelihood**: Low if following Phase 0 scope.
+
+**Mitigation**:
+- Ensure MVP demonstrates core value (optimized team with expected points)
+- Clear communication that predictions will improve
+- Early user testing to validate value proposition
+
+**Fallback**: Accelerate Phase 1 features if MVP feedback indicates insufficient value.
+
+### Risk: Unclear Success Metrics for MVP
+**Impact**: Medium - Can't determine if MVP is successful, unclear when to proceed to Phase 1.
+
+**Likelihood**: Low if metrics defined upfront.
+
+**Mitigation**:
+- Define MVP success criteria: "Can optimize team, predictions within 20% of actual on average"
+- Track backtesting metrics from day one
+- User feedback surveys (NPS, feature requests)
+
+**Fallback**: Extend Phase 0 if metrics not met, don't proceed to Phase 1 prematurely.
+
+## Resource Constraints
+
+### Risk: Computational Resources for ML Training
+**Impact**: Medium - Model training may be slow or fail on limited hardware.
+
+**Likelihood**: Low for Phase 0 (simple models), Medium for Phase 1+ (component-based models).
+
+**Mitigation**:
+- Start with simple models (XGBoost, not deep learning)
+- Use cloud resources for training (AWS/GCP spot instances)
+- Optimize training (feature selection, early stopping)
+- Cache trained models, retrain weekly (not daily)
+
+**Fallback**: Use simpler models, reduce training frequency, or use pre-trained models if available.
+
+### Risk: Database Performance with Time-Series Data
+**Impact**: Medium - Queries may be slow as data grows (multiple seasons, thousands of players).
+
+**Likelihood**: Medium - Time-series data grows quickly.
+
+**Mitigation**:
+- Use TimescaleDB for time-series optimization
+- Proper indexing (player_id, gameweek, timestamp)
+- Partitioning by season
+- Query optimization (avoid full table scans)
+- Archive old seasons to separate tables if needed
+
+**Fallback**: Increase database resources, implement more aggressive caching, or archive old data.
+
+### Risk: External API Rate Limits
+**Impact**: Medium - FPL API or external sources may rate limit, blocking data updates.
+
+**Likelihood**: Medium - Public APIs often have rate limits.
+
+**Mitigation**:
+- Implement DefCon rules (exponential backoff, respect rate limits)
+- Batch updates (update once daily, not real-time)
+- Cache aggressively to reduce API calls
+- Monitor rate limit usage
+
+**Fallback**: Reduce update frequency, use cached data longer, or contact API providers for higher limits.
+
+### Risk: Development Time Underestimation
+**Impact**: High - Features take longer than expected, delays launch.
+
+**Likelihood**: Medium - ML projects often have hidden complexity.
+
+**Mitigation**:
+- Break phases into smaller, testable milestones
+- Time-box each phase (don't perfect, ship and iterate)
+- Prioritize features by value (MVP first, nice-to-have later)
+- Regular progress reviews and scope adjustments
+
+**Fallback**: Reduce scope per phase, extend timeline, or add resources if available.
+
+## Data Quality Risks
+
+### Risk: Missing or Incorrect FPL Data
+**Impact**: High - Garbage in, garbage out. Poor data quality leads to poor predictions.
+
+**Likelihood**: Low (FPL API is generally reliable), but possible during API changes or outages.
+
+**Mitigation**:
+- Data validation checks (expected fields present, reasonable value ranges)
+- Alert on data anomalies (sudden price changes, missing players)
+- Manual review process for flagged data
+- Version data snapshots for rollback if needed
+
+**Fallback**: Use previous gameweek's data if current data invalid, or pause predictions until data fixed.
+
+### Risk: External Data Quality Issues
+**Impact**: Medium - Understat/FBref data may have errors or inconsistencies.
+
+**Likelihood**: Medium - Scraped data is less reliable than APIs.
+
+**Mitigation**:
+- Validation checks (xG should be positive, within reasonable range)
+- Compare to FPL data for consistency (goals should match)
+- Manual spot-checks for top players
+- Flag suspicious data for review
+
+**Fallback**: Exclude problematic external features, fall back to FPL-only predictions.
+
+# Appendix  
+
+## Research Findings
+
+### Expected Goals (xG) and Expected Assists (xA) Validity
+Research from football analytics community (Understat, StatsBomb) demonstrates that xG and xA are superior predictors of future performance compared to raw goals and assists. Process-oriented metrics reduce noise from variance and provide more stable predictions.
+
+**Key Insight**: Players with consistently high xG but low actual goals are often undervalued (regression to mean expected). Players with high actual goals but low xG are often overvalued (unsustainable).
+
+### Multi-Period Optimization in Fantasy Sports
+Academic research on fantasy sports optimization (particularly Daily Fantasy Sports) shows that multi-period optimization significantly outperforms single-period strategies. The key is balancing immediate value with future opportunity cost.
+
+**Key Insight**: Optimal strategy often involves "selling high" on players before fixture difficulty increases, even if they're performing well currently.
+
+### Ownership Bias in Fantasy Sports
+Behavioral finance research applied to fantasy sports shows that high ownership creates price inefficiencies. The "herd mentality" leads to overvaluation of popular players.
+
+**Key Insight**: Identifying differentials (low ownership, high expected value) provides edge over managers following the herd.
+
+### Bayesian Optimization for Hyperparameter Tuning
+Research shows Bayesian Optimization (Gaussian Process-based) is more efficient than grid search or random search for hyperparameter tuning, especially with limited data.
+
+**Key Insight**: For FPL with only 38 gameweeks per season, efficient hyperparameter search is critical to avoid overfitting.
+
+### Integer Linear Programming for Team Selection
+Operations research literature demonstrates ILP is the gold standard for constrained resource optimization problems like fantasy team selection. Solvers like Gurobi, CPLEX, and Highs can handle problems with thousands of variables.
+
+**Key Insight**: ILP guarantees optimal solution (within timeout), unlike heuristic approaches which may miss better solutions.
+
+## Technical Specifications
+
+### Model Training Specifications
+
+**xMins Predictor**:
+- Algorithm: XGBoost Classifier (binary: starts/doesn't start)
+- Hyperparameters: 
+  - max_depth: 5
+  - learning_rate: 0.1
+  - n_estimators: 100
+  - subsample: 0.8
+- Training window: Expanding window (GW1 to GW_n)
+- Validation: 5-fold cross-validation within training window
+- Retraining frequency: Weekly (after each gameweek completes)
+
+**Attack Model (Hücum)**:
+- Algorithm: LightGBM Regressor (for xG and xA separately)
+- Hyperparameters:
+  - max_depth: 7
+  - learning_rate: 0.05
+  - n_estimators: 200
+  - feature_fraction: 0.8
+- Training: Position-specific models (forwards, midfielders, defenders)
+- Validation: Expanding window with temporal split
+- Retraining frequency: Weekly
+
+**Defense Model (Savunma)**:
+- Algorithm: LightGBM Classifier (for P_CS) and Regressor (for xGC)
+- Hyperparameters: Similar to Attack Model
+- Training: Position-specific (defenders, goalkeepers)
+- Validation: Expanding window
+- Retraining frequency: Weekly
+
+**Dynamic Decay Optimizer**:
+- Algorithm: Gaussian Process-based Bayesian Optimization (scikit-optimize)
+- Search space: α ∈ [0.1, 0.9] (decay rate)
+- Objective: Minimize RMSE on validation set
+- Iterations: 50 Bayesian optimization iterations
+- Validation: Expanding window (train on GW1...GW_n, validate on GW_{n+1})
+
+**Stochastic FDR Calculator**:
+- Algorithm: Poisson Regression (statsmodels)
+- Features: Home/away, team attack strength, team defense strength, historical xGC
+- Calibration: Recalibrated weekly as new data arrives
+- Output: Expected goals scored (xGS) and expected goals conceded (xGC) for each fixture
+
+### Optimization Problem Specifications
+
+**Decision Variables**:
+- x[i,t]: Binary, 1 if player i selected in team at time t
+- y[i,j,t]: Binary, 1 if transfer from player i to j at time t
+- c[t]: Binary, 1 if captain selected at time t (for C/VC optimization)
+
+**Objective Function**:
+Maximize: Σ_t Σ_i (xP[i,t] · x[i,t]) - Σ_t Σ_i Σ_j (C_trans · y[i,j,t])
+
+Where:
+- xP[i,t] = Expected points for player i in gameweek t
+- C_trans = Transfer cost (4 points, or 0 if free transfer available)
+
+**Constraints**:
+1. Budget: Σ_i (price[i,t] · x[i,t]) ≤ 100 for all t
+2. Team limit: Σ_i∈team_j (x[i,t]) ≤ 3 for all teams j, all t
+3. Position requirements:
+   - Σ_i∈GK (x[i,t]) = 2
+   - Σ_i∈DEF (x[i,t]) = 5
+   - Σ_i∈MID (x[i,t]) = 5
+   - Σ_i∈FWD (x[i,t]) = 3
+4. Starting XI: Exactly 11 players must have is_starting = True
+5. Transfer limits: Σ_i Σ_j (y[i,j,t]) ≤ free_transfers[t] + chip_bonus[t]
+6. Captain constraint: Exactly one captain, one vice-captain
+
+**Solver Configuration**:
+- Solver: PuLP with Highs backend
+- Timeout: 60 seconds
+- MIP gap: 0.01 (1% optimality gap acceptable)
+- Threads: 4 (parallel solving)
+
+### API Response Time Targets
+
+- `/api/v1/team/optimize`: < 2 seconds (single gameweek)
+- `/api/v1/team/plan`: < 10 seconds (multi-period, may be longer)
+- `/api/v1/players/{id}/predictions`: < 500ms (cached predictions)
+- `/api/v1/market/intelligence`: < 1 second (pre-computed daily)
+
+### Data Update Schedule
+
+- **FPL API**: Daily at 2 AM UTC (after gameweek updates)
+- **Understat**: Daily at 3 AM UTC (after match data available)
+- **FBref**: Weekly on Mondays (after weekend matches)
+- **Model Retraining**: Weekly on Tuesdays (after gameweek completes, before next deadline)
+- **Feature Recalculation**: Daily after data updates complete
+
+### Performance Benchmarks
+
+**Model Accuracy Targets** (based on backtesting):
+- xMins Prediction: > 80% accuracy (binary classification)
+- xG Prediction: RMSE < 0.3 (for forwards/midfielders)
+- xA Prediction: RMSE < 0.2
+- Total Points Prediction: RMSE < 3.0 points per player per gameweek
+- Team Optimization: Expected points within 5% of theoretical optimum (for single GW)
+
+**System Performance Targets**:
+- API response time: P95 < 2 seconds
+- Database query time: P95 < 500ms
+- Model training time: < 30 minutes for all models
+- Data ingestion time: < 15 minutes for daily updates
+
+## Glossary
+
+- **xG (Expected Goals)**: Probability-weighted sum of goal probabilities from all shots. Measures quality of chances created.
+- **xA (Expected Assists)**: Expected goals resulting from a player's passes/key passes. Measures quality of chance creation.
+- **NPxG (Non-Penalty xG)**: Expected goals excluding penalties. More stable metric as penalties are high-variance.
+- **xGC (Expected Goals Conceded)**: Expected goals a team will concede based on defensive strength and opponent attacking strength.
+- **xCS (Expected Clean Sheet)**: Probability of a team keeping a clean sheet (0 goals conceded).
+- **DefCon (Defensive Contribution)**: Points earned from blocks, tackles, and interceptions (2025/26 FPL rule changes).
+- **FDR (Fixture Difficulty Rating)**: Numerical rating of how difficult a fixture is (1 = easiest, 5 = hardest). FDR 2.0 uses stochastic modeling rather than fixed ratings.
+- **Ownership**: Percentage of FPL managers who own a particular player.
+- **Differential**: Player with low ownership but high expected value. Provides edge over managers following the herd.
+- **Overvalued Asset**: Player with high ownership but declining expected points. Market inefficiency to exploit.
+- **xP (Expected Points)**: Predicted total FPL points for a player in a given gameweek, calculated from component predictions.
+- **P_start**: Probability that a player will start (play from beginning of match).
+- **Expanding Window Validation**: Training methodology where model trains on GW1...GW_n to predict GW_{n+1}, then expands to include GW_{n+1} for next prediction. Prevents look-ahead bias.
+- **Look-Ahead Bias**: Using future information to make past predictions, leading to inflated performance metrics that don't reflect real-world accuracy.
+- **ILP (Integer Linear Programming)**: Mathematical optimization technique for problems with integer decision variables and linear constraints. Guarantees optimal solution.
+- **Bayesian Optimization**: Efficient hyperparameter tuning method using Gaussian Processes to model objective function and guide search.
+- **Zero-Constant Philosophy**: Approach where every coefficient and parameter is derived from data rather than hardcoded based on intuition.
+
+## Open Questions
+
+1. **FPL API Stability**: Will the Official FPL API structure change? Need to monitor for breaking changes and have fallback plans.
+
+2. **External Data Access**: Will Understat/FBref restrict scraping access? Should we pursue official API access or paid data providers?
+
+3. **Model Interpretability**: How much transparency do users need? Should we show Shapley values or feature importance for each prediction?
+
+4. **Multi-User Architecture**: Should Phase 3 include multi-user support, or keep it single-user initially? Affects database schema and API design.
+
+5. **Real-Time vs. Batch**: How real-time should updates be? Daily batch may be sufficient, but users may expect instant updates during gameweeks.
+
+6. **Chip Strategy**: How should wildcard/free hit be optimized? Different objective functions may be needed (maximize points over remaining season vs. single gameweek).
+
+7. **Price Change Prediction**: Should we build price change prediction models, or focus solely on expected points? Price changes affect transfer timing.
+
+8. **Injury/Suspension Data**: How to integrate real-time injury news? Manual input, web scraping, or API integration?
+
+9. **Bench Boost/Triple Captain Timing**: When is optimal time to use these chips? Requires season-long optimization, not just gameweek-level.
+
+10. **User Override Learning**: Should the system learn from user overrides? If user consistently rejects certain recommendations, should model adapt?

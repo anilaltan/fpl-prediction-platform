@@ -12,7 +12,7 @@ from sqlalchemy import and_
 from app.database import SessionLocal
 from app.models import Player, PlayerGameweekStats, Prediction
 from app.services.ml_engine import PLEngine
-from app.services.fpl_api import FPLAPIService
+from app.services.fpl import FPLAPIService
 
 logger = logging.getLogger(__name__)
 
@@ -102,14 +102,16 @@ async def update_predictions_for_gameweek(
             # Start fresh transaction for each player
             try:
                 # Get player's historical stats
-                player_stats = stats_by_player.get(player.fpl_id, [])
+                player_stats = stats_by_player.get(player.id, [])  # Player.id is the FPL ID
                 latest_stat = player_stats[0] if player_stats else None
                 
                 # Build player_data for ML engine
+                # Convert Decimal price to float
+                player_price = float(player.price) if player.price else 5.0
                 player_data = {
-                    'fpl_id': player.fpl_id,
+                    'fpl_id': player.id,  # Player.id is the FPL ID
                     'position': player.position or 'MID',
-                    'price': player.price or 5.0,
+                    'price': player_price,
                     'status': getattr(player, 'status', 'a') or 'a',
                     'minutes': 0,
                     'xg_per_90': 0.0,
@@ -166,7 +168,7 @@ async def update_predictions_for_gameweek(
                 # ======================================================================
                 # HARD FILTER: Check player availability (injury/suspension)
                 # ======================================================================
-                player_availability = availability_map.get(player.fpl_id, {})
+                player_availability = availability_map.get(player.id, {})  # Player.id is the FPL ID
                 chance_of_playing = player_availability.get('chance_of_playing_next_round')
                 player_status = player_availability.get('status', 'a')
                 
@@ -191,15 +193,15 @@ async def update_predictions_for_gameweek(
                     # Set xp and xmins to 0 for injured/suspended players
                     xp = 0.0
                     xmins = 0.0
-                    player_name = getattr(player, 'name', f'ID:{player.fpl_id}')
+                    player_name = getattr(player, 'name', f'ID:{player.id}')
                     logger.info(
-                        f"[BATCH PREDICTION] Player {player_name} (ID:{player.fpl_id}) set to 0 xP due to injury/suspension ({filter_reason})"
+                        f"[BATCH PREDICTION] Player {player_name} (ID:{player.id}) set to 0 xP due to injury/suspension ({filter_reason})"
                     )
                 
                 # Check if prediction already exists
                 existing = db.query(Prediction).filter(
                     and_(
-                        Prediction.fpl_id == player.fpl_id,
+                        Prediction.fpl_id == player.id,  # Player.id is the FPL ID
                         Prediction.gameweek == gameweek,
                         Prediction.season == season
                     )
@@ -219,7 +221,7 @@ async def update_predictions_for_gameweek(
                 else:
                     # Create new prediction
                     new_prediction = Prediction(
-                        fpl_id=player.fpl_id,
+                        fpl_id=player.id,  # Player.id is the FPL ID
                         gameweek=gameweek,
                         season=season,
                         xp=xp,
@@ -250,7 +252,7 @@ async def update_predictions_for_gameweek(
                     db.expire_all()  # Clear all cached objects from session
                 except Exception as rollback_error:
                     # If rollback fails, log but continue - we'll try to start fresh next iteration
-                    logger.warning(f"[BATCH PREDICTION] Rollback failed for player {player.fpl_id}: {str(rollback_error)}")
+                    logger.warning(f"[BATCH PREDICTION] Rollback failed for player {player.id}: {str(rollback_error)}")
                     # Try to expire anyway to clear session
                     try:
                         db.expire_all()
@@ -258,9 +260,9 @@ async def update_predictions_for_gameweek(
                         pass
                 
                 error_count += 1
-                player_name = getattr(player, 'name', f'ID:{player.fpl_id}')
+                player_name = getattr(player, 'name', f'ID:{player.id}')
                 logger.error(
-                    f"[BATCH PREDICTION] Error processing player {player_name} (ID:{player.fpl_id}): {str(e)}",
+                    f"[BATCH PREDICTION] Error processing player {player_name} (ID:{player.id}): {str(e)}",
                     exc_info=True  # Include full traceback for debugging
                 )
                 # Continue to next player - don't let one error stop the entire process

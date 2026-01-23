@@ -27,23 +27,55 @@ export async function GET(request: Request) {
         'Content-Type': 'application/json',
       },
       // Increase timeout for ML predictions
-      signal: AbortSignal.timeout(60000), // 60 seconds
+      // Reduced to 30 seconds - backend should respond faster with optimizations
+      signal: AbortSignal.timeout(30000), // 30 seconds
     })
     
     if (!response.ok) {
+      // Try to get error details from backend
+      let errorDetail = 'Backend request failed'
+      try {
+        const errorData = await response.json().catch(() => null)
+        if (errorData && errorData.detail) {
+          errorDetail = errorData.detail
+        }
+      } catch {
+        // Ignore JSON parse errors
+      }
+      
+      console.error(`Backend API error (${response.status}): ${errorDetail}`)
       return NextResponse.json(
-        { error: 'Backend request failed', status: response.status },
-        { status: response.status }
+        { error: errorDetail, status: response.status },
+        { status: response.status },
       )
     }
     
     const data = await response.json()
+    
+    // Validate response is an array
+    if (!Array.isArray(data)) {
+      console.error('Backend returned non-array response:', typeof data)
+      return NextResponse.json(
+        { error: 'Invalid response format from backend', data },
+        { status: 500 },
+      )
+    }
+    
     return NextResponse.json(data)
   } catch (error: any) {
     console.error('API route error:', error)
+    
+    // Handle timeout errors
+    if (error.name === 'TimeoutError' || error.name === 'AbortError') {
+      return NextResponse.json(
+        { error: 'Request timeout - backend took too long to respond' },
+        { status: 504 },
+      )
+    }
+    
     return NextResponse.json(
       { error: error.message || 'Internal server error' },
-      { status: 500 }
+      { status: 500 },
     )
   }
 }

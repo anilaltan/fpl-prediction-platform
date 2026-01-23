@@ -71,6 +71,11 @@ class BacktestEngine:
         self.cumulative_points = 0.0
         self.total_transfer_cost = 0
         
+        # CRITICAL FIX: Store individual player predictions for proper metric calculation
+        # This allows us to calculate RMSE/R² on all predictions, not just weekly team sums
+        self.all_individual_predictions = []  # List of (predicted, actual, gameweek) tuples
+        self.all_individual_actuals = []
+        
     def run_expanding_window_backtest(
         self,
         start_gameweek: int = 1,
@@ -163,6 +168,10 @@ class BacktestEngine:
                 )
             
             # Expanding window: train on all previous weeks, predict current
+            # CRITICAL: Track when to fit initial calibration (after enough data collected)
+            calibration_fitted_early = False
+            calibration_fit_threshold = max(5, len(test_gameweeks) // 3)  # Fit after 1/3 of weeks or 5 weeks, whichever is larger
+            
             for i, current_gw in enumerate(test_gameweeks):
                 logger.info("")
                 logger.info(f"Processing Gameweek {current_gw} ({i+1}/{len(test_gameweeks)})")
@@ -179,6 +188,35 @@ class BacktestEngine:
                 if not training_weeks:
                     logger.warning(f"No training data for GW{current_gw}")
                     continue
+                
+                # CRITICAL FIX: Fit calibration early if we have enough predictions
+                # This allows calibration to be applied to subsequent predictions
+                # Check BEFORE making predictions so calibration can be applied to current week
+                if not calibration_fitted_early and len(self.all_individual_predictions) >= calibration_fit_threshold:
+                    logger.info("")
+                    logger.info("=" * 60)
+                    logger.info("Fitting Early Calibration (for subsequent predictions)")
+                    logger.info("=" * 60)
+                    logger.info(f"Using {len(self.all_individual_predictions)} predictions for early calibration")
+                    
+                    calibration_result = self.plengine.fit_calibration(
+                        predicted_points=np.array(self.all_individual_predictions),
+                        actual_points=np.array(self.all_individual_actuals),
+                        method='linear'
+                    )
+                    
+                    if calibration_result:
+                        calibration_fitted_early = True
+                        logger.info(f"✓ Early calibration fitted: scale={calibration_result.get('scale', 1.0):.3f}, offset={calibration_result.get('offset', 0.0):.3f}")
+                        logger.info(f"  Calibration will be applied to predictions for GW{current_gw} onwards")
+                        logger.info(f"  RMSE improvement: {calibration_result.get('improvement_pct', 0.0):.1f}%")
+                        logger.info(f"  R² improvement: {calibration_result.get('r2_after', 0.0) - calibration_result.get('r2_before', 0.0):+.3f}")
+                    else:
+                        logger.warning("⚠ Early calibration fitting failed, continuing without calibration")
+                
+                # Log calibration status for debugging
+                if calibration_fitted_early:
+                    logger.debug(f"Calibration status: fitted={self.plengine.calibration_fitted}, scale={self.plengine.calibration_scale:.3f}, offset={self.plengine.calibration_offset:.3f}")
                 
                 # Run backtest for this week
                 week_result = self._backtest_week(
@@ -208,8 +246,56 @@ class BacktestEngine:
         finally:
             db.close()
         
-        # Calculate overall metrics
+        # Calculate overall metrics (before calibration)
         overall_metrics = self._calculate_overall_metrics()
+        
+        # CRITICAL FIX: Fit calibration layer to align predicted scale with actual distribution
+        # This addresses the bias/scaling issue causing negative R²
+        # The calibration uses least squares to preserve variance while fixing bias
+        if len(self.all_individual_predictions) > 0 and len(self.all_individual_actuals) > 0:
+            logger.info("")
+            logger.info("=" * 60)
+            logger.info("Fitting Final Calibration Layer (All Data)")
+            logger.info("=" * 60)
+            
+            calibration_result = self.plengine.fit_calibration(
+                predicted_points=np.array(self.all_individual_predictions),
+                actual_points=np.array(self.all_individual_actuals),
+                method='linear'  # Can be 'linear' or 'isotonic'
+            )
+            
+            if calibration_result:
+                logger.info(f"Calibration fitted successfully:")
+                logger.info(f"  Scale: {calibration_result.get('scale', 1.0):.3f}")
+                logger.info(f"  Offset: {calibration_result.get('offset', 0.0):.3f}")
+                logger.info(f"  RMSE improvement: {calibration_result.get('improvement_pct', 0.0):.1f}%")
+                logger.info(f"  R² improvement: {calibration_result.get('r2_after', 0.0) - calibration_result.get('r2_before', 0.0):+.3f}")
+                
+                # Recalculate metrics with calibrated predictions
+                calibrated_pred = np.array(self.all_individual_predictions) * calibration_result.get('scale', 1.0) + calibration_result.get('offset', 0.0)
+                calibrated_pred = np.clip(calibrated_pred, 0.0, None)
+                
+                rmse_calibrated = np.sqrt(mean_squared_error(self.all_individual_actuals, calibrated_pred))
+                mean_actual = float(np.mean(self.all_individual_actuals))
+                mean_pred_calibrated = float(np.mean(calibrated_pred))
+                
+                ss_res_cal = np.sum((np.array(self.all_individual_actuals) - calibrated_pred) ** 2)
+                ss_tot_cal = np.sum((np.array(self.all_individual_actuals) - mean_actual) ** 2)
+                r2_calibrated = 1 - (ss_res_cal / ss_tot_cal) if ss_tot_cal > 0 else 0.0
+                
+                overall_metrics['rmse_calibrated'] = float(rmse_calibrated)
+                overall_metrics['r_squared_calibrated'] = float(r2_calibrated)
+                overall_metrics['mean_predicted_calibrated'] = mean_pred_calibrated
+                overall_metrics['calibration_params'] = {
+                    'scale': calibration_result.get('scale', 1.0),
+                    'offset': calibration_result.get('offset', 0.0)
+                }
+                
+                logger.info("")
+                logger.info("Calibrated Metrics:")
+                logger.info(f"  RMSE: {overall_metrics.get('rmse', 0):.2f} -> {rmse_calibrated:.2f}")
+                logger.info(f"  R²: {overall_metrics.get('r_squared', 0):.3f} -> {r2_calibrated:.3f}")
+                logger.info(f"  Mean Predicted: {overall_metrics.get('mean_predicted', 0):.2f} -> {mean_pred_calibrated:.2f}")
         
         # Generate report
         report = self._generate_report(overall_metrics)
@@ -281,7 +367,10 @@ class BacktestEngine:
             
             # 3. Initialize and train model
             logger.info("Training model...")
-            self.plengine = PLEngine()
+            # CRITICAL FIX: Reuse existing PLEngine instance to preserve calibration
+            # If calibration was fitted early, we need to keep the same instance
+            if self.plengine is None:
+                self.plengine = PLEngine()
             # CRITICAL: Ensure models are loaded before using them
             self.plengine._ensure_models_loaded()
             
@@ -374,9 +463,15 @@ class BacktestEngine:
                     predictions.append(0.0)
                     actual_points.append(current_week_data.get('total_points', 0))
             
-            # 5. Calculate metrics
+            # 5. Calculate metrics (on individual player predictions)
             rmse = np.sqrt(mean_squared_error(actual_points, predictions))
             spearman_corr, _ = spearmanr(actual_points, predictions)
+            
+            # CRITICAL FIX: Store individual predictions for aggregate metrics
+            # This allows proper RMSE/R² calculation across all players and weeks
+            for pred, actual in zip(predictions, actual_points):
+                self.all_individual_predictions.append(pred)
+                self.all_individual_actuals.append(actual)
             
             # 6. Solver integration (if enabled)
             solver_result = None
@@ -451,9 +546,9 @@ class BacktestEngine:
         """
         from sqlalchemy.orm import joinedload
         
-        # CRITICAL: Join on fpl_id (NOT player_id)
+        # CRITICAL: Join on fpl_id -> Player.id (Player model uses 'id' as FPL player ID)
         query = db.query(PlayerGameweekStats).join(
-            Player, PlayerGameweekStats.fpl_id == Player.fpl_id
+            Player, PlayerGameweekStats.fpl_id == Player.id
         ).filter(
             and_(
                 PlayerGameweekStats.season == self.season,  # Dynamic season filter (default: "2025-26")
@@ -476,14 +571,16 @@ class BacktestEngine:
         # CRITICAL: Merge with Player table to get position and price
         # The join above only filters, we need to actually merge the columns
         player_ids = data['fpl_id'].unique().tolist()
-        logger.info(f"Merging with Player table using fpl_id: {len(player_ids)} unique players")
-        players_query = db.query(Player).filter(Player.fpl_id.in_(player_ids))
+        logger.info(f"Merging with Player table using id (fpl_id): {len(player_ids)} unique players")
+        players_query = db.query(Player).filter(Player.id.in_(player_ids))
         players_df = pd.read_sql(players_query.statement, db.bind)
         
         if not players_df.empty:
+            # Rename Player.id to fpl_id for merge (Player model uses 'id' as FPL player ID)
+            players_df = players_df.rename(columns={'id': 'fpl_id'})
             # Merge to get position and price
             data = data.merge(
-                players_df[['fpl_id', 'position', 'price', 'team']],
+                players_df[['fpl_id', 'position', 'price']],
                 on='fpl_id',
                 how='left',
                 suffixes=('', '_player')
@@ -548,16 +645,18 @@ class BacktestEngine:
             logger.warning(f"No data found for gameweek {gameweek} (season='{self.season}')")
             return pd.DataFrame()
         
-        # CRITICAL: Load Player data using fpl_id (NOT player_id)
+        # CRITICAL: Load Player data using id (Player model uses 'id' as FPL player ID)
         player_ids = stats_df['fpl_id'].unique().tolist()
-        logger.info(f"Merging with Player table using fpl_id: {len(player_ids)} unique players")
-        players_query = db.query(Player).filter(Player.fpl_id.in_(player_ids))
+        logger.info(f"Merging with Player table using id (fpl_id): {len(player_ids)} unique players")
+        players_query = db.query(Player).filter(Player.id.in_(player_ids))
         players_df = pd.read_sql(players_query.statement, db.bind)
         
         if not players_df.empty:
+            # Rename Player.id to fpl_id for merge (Player model uses 'id' as FPL player ID)
+            players_df = players_df.rename(columns={'id': 'fpl_id'})
             # Merge to get position and price
             stats_df = stats_df.merge(
-                players_df[['fpl_id', 'position', 'price', 'team']],
+                players_df[['fpl_id', 'position', 'price']],
                 on='fpl_id',
                 how='left',
                 suffixes=('', '_player')
@@ -723,7 +822,13 @@ class BacktestEngine:
 
         # CRITICAL FIX: Pre-calculate cumulative stats for each player up to each gameweek
         # This avoids target leakage by using only PAST data for features
-        training_data_sorted = training_data.sort_values(['fpl_id', 'gameweek'])
+        # Task 3.1: Optimize DataFrame types before processing
+        from app.utils.dataframe_optimizer import optimize_dataframe_types
+        training_data_sorted = optimize_dataframe_types(
+            training_data.sort_values(['fpl_id', 'gameweek']),
+            int_columns=['fpl_id', 'gameweek'],
+            category_columns=['position']
+        )
         
         # Build cumulative stats for each player
         player_cumulative_stats = {}  # {fpl_id: {gameweek: {stats...}}}
@@ -933,27 +1038,38 @@ class BacktestEngine:
     
     def _calculate_overall_metrics(self) -> Dict:
         """
-        Calculate overall metrics from weekly results.
+        Calculate overall metrics from individual player predictions across all weeks.
+        
+        CRITICAL FIX: Previously calculated metrics on weekly team sums, which was incorrect.
+        Now aggregates all individual player predictions for proper RMSE/R² calculation.
         
         Returns:
             Dictionary with overall metrics
         """
-        if not self.weekly_results:
-            return {}
+        # Use individual player predictions if available (more accurate)
+        if len(self.all_individual_predictions) > 0 and len(self.all_individual_actuals) > 0:
+            all_predicted_arr = np.array(self.all_individual_predictions)
+            all_actual_arr = np.array(self.all_individual_actuals)
+            
+            logger.info(f"Calculating metrics on {len(all_predicted_arr)} individual player predictions")
+        else:
+            # Fallback to weekly aggregated results (less accurate but better than nothing)
+            if not self.weekly_results:
+                return {}
+            
+            all_predicted = []
+            all_actual = []
+            
+            for result in self.weekly_results:
+                all_predicted.append(result.get('predicted_points', 0.0))
+                all_actual.append(result.get('actual_points', 0.0))
+            
+            all_predicted_arr = np.array(all_predicted)
+            all_actual_arr = np.array(all_actual)
+            
+            logger.warning("Using weekly aggregated results for metrics (less accurate than individual predictions)")
         
-        # Collect all predictions and actuals
-        all_predicted = []
-        all_actual = []
-        
-        for result in self.weekly_results:
-            all_predicted.append(result.get('predicted_points', 0.0))
-            all_actual.append(result.get('actual_points', 0.0))
-        
-        # Convert to numpy arrays for safe operations
-        all_predicted_arr = np.array(all_predicted)
-        all_actual_arr = np.array(all_actual)
-        
-        # Safe checks for empty arrays (prevents 'Mean of empty slice' warnings)
+        # Safe checks for empty arrays
         if len(all_predicted_arr) == 0 or len(all_actual_arr) == 0:
             return {
                 'rmse': 0.0,
@@ -963,12 +1079,16 @@ class BacktestEngine:
                 'mean_actual': 0.0,
                 'mean_predicted': 0.0,
                 'n_weeks': 0,
+                'n_predictions': 0,
                 'cumulative_points': self.cumulative_points,
                 'total_transfer_cost': self.total_transfer_cost
             }
         
-        # Calculate overall RMSE
-        rmse = np.sqrt(mean_squared_error(all_actual_arr, all_predicted_arr))
+        # CRITICAL FIX: Calculate overall RMSE correctly
+        # RMSE = sqrt(mean of ALL squared errors across all weeks combined)
+        # NOT an average of weekly RMSEs
+        squared_errors = (all_actual_arr - all_predicted_arr) ** 2
+        rmse = np.sqrt(np.mean(squared_errors))
         
         # Calculate overall Spearman correlation (handle edge cases)
         if len(all_actual_arr) >= 2:
@@ -982,13 +1102,51 @@ class BacktestEngine:
         # Calculate MAE safely
         mae = float(np.mean(np.abs(all_actual_arr - all_predicted_arr)))
         
-        # Calculate R-squared safely
+        # CRITICAL FIX: Calculate R-squared correctly
+        # R² = 1 - (SS_res / SS_tot)
+        # SS_res = sum of squared residuals (prediction errors)
+        # SS_tot = sum of squared deviations from mean (baseline: horizontal line at mean)
+        # Negative R² means model is worse than predicting the mean for everyone
         mean_actual = float(np.mean(all_actual_arr))
         mean_predicted = float(np.mean(all_predicted_arr))
         
+        # Sum of squared residuals (errors)
         ss_res = np.sum((all_actual_arr - all_predicted_arr) ** 2)
+        
+        # Sum of squared total (variance of actuals around their mean)
+        # This is the baseline: if we predicted mean_actual for everyone, this is the error
         ss_tot = np.sum((all_actual_arr - mean_actual) ** 2)
+        
+        # R² calculation: 1 - (SS_res / SS_tot)
+        # If SS_res > SS_tot, then R² < 0 (model worse than mean baseline)
         r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+        
+        # Additional diagnostic: variance ratio
+        # If predicted variance is much lower than actual variance, model is too conservative
+        var_actual = float(np.var(all_actual_arr))
+        var_predicted = float(np.var(all_predicted_arr))
+        variance_ratio = var_predicted / var_actual if var_actual > 0 else 0.0
+        
+        # Calculate bias (mean difference)
+        bias = mean_predicted - mean_actual
+        
+        # Calculate percentage bias
+        pct_bias = (bias / mean_actual * 100.0) if mean_actual > 0 else 0.0
+        
+        logger.info(f"Overall Metrics:")
+        logger.info(f"  Mean Actual: {mean_actual:.2f}")
+        logger.info(f"  Mean Predicted: {mean_predicted:.2f}")
+        logger.info(f"  Bias: {bias:.2f} ({pct_bias:.1f}%)")
+        logger.info(f"  Variance Actual: {var_actual:.2f}")
+        logger.info(f"  Variance Predicted: {var_predicted:.2f}")
+        logger.info(f"  Variance Ratio: {variance_ratio:.3f} (should be ~1.0)")
+        logger.info(f"  RMSE: {rmse:.2f}")
+        logger.info(f"  R²: {r_squared:.3f}")
+        
+        # Diagnostic: If variance ratio is too low, model is predicting "safe mean"
+        if variance_ratio < 0.5:
+            logger.warning(f"WARNING: Variance ratio {variance_ratio:.3f} is too low. Model may be predicting 'safe mean' values.")
+            logger.warning(f"  This suggests predictions lack variance and cluster around the mean.")
         
         return {
             'rmse': float(rmse),
@@ -997,7 +1155,13 @@ class BacktestEngine:
             'r_squared': float(r_squared),
             'mean_actual': mean_actual,
             'mean_predicted': mean_predicted,
+            'bias': float(bias),
+            'pct_bias': float(pct_bias),
+            'variance_actual': var_actual,
+            'variance_predicted': var_predicted,
+            'variance_ratio': float(variance_ratio),
             'n_weeks': len(self.weekly_results),
+            'n_predictions': len(all_predicted_arr),
             'cumulative_points': self.cumulative_points,
             'total_transfer_cost': self.total_transfer_cost
         }

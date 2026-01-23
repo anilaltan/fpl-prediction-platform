@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 import os
 from dotenv import load_dotenv
 
-from app.models import Player, PlayerGameweekStats
+from app.models import Player, PlayerGameweekStats, Team
 from app.database import SessionLocal, engine
 
 load_dotenv()
@@ -95,25 +95,39 @@ class ETLService:
                 if price_millions > 100:
                     price_millions = price_millions / 10.0
 
+            # Get team_id from player_data (FPL API provides 'team_id' or 'team')
+            team_id = player_data.get('team_id') or player_data.get('team')
+            if team_id:
+                team_id = int(team_id)
+            else:
+                team_id = None
+            
+            # Get ownership percentage
+            ownership = player_data.get('selected_by_percent')
+            if ownership is not None:
+                ownership = float(ownership)
+            else:
+                ownership = None
+            
             player_dict = {
-                'fpl_id': fpl_id,
+                'id': int(fpl_id),  # Use 'id' as primary key (FPL player ID)
                 'name': player_data.get('web_name') or player_data.get('name', ''),
-                'team': player_data.get('team_name') or player_data.get('team', ''),
+                'team_id': team_id,
                 'position': self._normalize_position(element_type),
                 'price': price_millions,
-                'total_points': int(player_data.get('total_points', 0))
+                'ownership': ownership
             }
             
             # Use PostgreSQL UPSERT (ON CONFLICT)
             stmt = insert(Player).values(**player_dict)
             stmt = stmt.on_conflict_do_update(
-                index_elements=['fpl_id'],
+                index_elements=['id'],  # Use 'id' as primary key
                 set_={
                     'name': stmt.excluded.name,
-                    'team': stmt.excluded.team,
+                    'team_id': stmt.excluded.team_id,
                     'position': stmt.excluded.position,
                     'price': stmt.excluded.price,
-                    'total_points': stmt.excluded.total_points,
+                    'ownership': stmt.excluded.ownership,
                     'updated_at': datetime.utcnow()
                 }
             )
@@ -122,11 +136,11 @@ class ETLService:
             await session.commit()
             
             # Fetch the updated/inserted record
+            from sqlalchemy import select
             result = await session.execute(
-                text("SELECT * FROM players WHERE fpl_id = :fpl_id"),
-                {"fpl_id": fpl_id}
+                select(Player).where(Player.id == fpl_id)
             )
-            player_row = result.fetchone()
+            player_row = result.scalar_one()
             
             logger.info(f"UPSERTed player: {player_dict['name']} (FPL ID: {fpl_id})")
             
@@ -272,6 +286,148 @@ class ETLService:
             
             return {
                 'total': len(players_data),
+                'inserted': inserted,
+                'updated': updated,
+                'errors': errors
+            }
+            
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Error in bulk upsert: {str(e)}")
+            raise
+        finally:
+            await session.close()
+    
+    async def upsert_team(
+        self,
+        team_data: Dict,
+        session: Optional[AsyncSession] = None
+    ) -> Team:
+        """
+        UPSERT a team record.
+        Updates if exists (by id), inserts if new.
+        
+        Args:
+            team_data: Team data dictionary from FPL API
+            session: Optional async session (creates new if not provided)
+        
+        Returns:
+            Team model instance
+        """
+        should_close = False
+        if session is None:
+            session = self.async_session_maker()
+            should_close = True
+        
+        try:
+            team_id = team_data.get('id')
+            if not team_id:
+                raise ValueError("Team data must include 'id'")
+            
+            # Map FPL API fields to database schema
+            # FPL provides: strength_attack_home, strength_attack_away
+            # We store: strength_attack (average of home/away)
+            strength_attack_home = team_data.get('strength_attack_home', 0)
+            strength_attack_away = team_data.get('strength_attack_away', 0)
+            strength_attack = int((strength_attack_home + strength_attack_away) / 2) if (strength_attack_home + strength_attack_away) > 0 else None
+            
+            # FPL provides: strength_defence_home, strength_defence_away
+            # We store: strength_defense (average of home/away)
+            strength_defence_home = team_data.get('strength_defence_home', 0)
+            strength_defence_away = team_data.get('strength_defence_away', 0)
+            strength_defense = int((strength_defence_home + strength_defence_away) / 2) if (strength_defence_home + strength_defence_away) > 0 else None
+            
+            # FPL provides: strength (overall)
+            # We store: strength_overall
+            strength_overall = team_data.get('strength')
+            
+            team_dict = {
+                'id': int(team_id),
+                'name': team_data.get('name', ''),
+                'short_name': team_data.get('short_name', ''),
+                'strength_attack': strength_attack,
+                'strength_defense': strength_defense,
+                'strength_overall': strength_overall
+            }
+            
+            # Use PostgreSQL UPSERT (ON CONFLICT)
+            from sqlalchemy.dialects.postgresql import insert
+            from app.models import Team
+            from datetime import datetime
+            
+            stmt = insert(Team).values(**team_dict)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['id'],
+                set_={
+                    'name': stmt.excluded.name,
+                    'short_name': stmt.excluded.short_name,
+                    'strength_attack': stmt.excluded.strength_attack,
+                    'strength_defense': stmt.excluded.strength_defense,
+                    'strength_overall': stmt.excluded.strength_overall,
+                    'updated_at': datetime.utcnow()
+                }
+            )
+            
+            await session.execute(stmt)
+            await session.commit()
+            
+            logger.info(f"UPSERTed team: {team_dict['name']} (ID: {team_id})")
+            
+            # Fetch the updated/inserted record
+            from sqlalchemy import select
+            result = await session.execute(
+                select(Team).where(Team.id == team_id)
+            )
+            team_row = result.scalar_one()
+            
+            return team_row
+            
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Error UPSERTing team {team_data.get('id')}: {str(e)}")
+            raise
+        finally:
+            if should_close:
+                await session.close()
+    
+    async def bulk_upsert_teams(
+        self,
+        teams_data: List[Dict],
+        batch_size: int = 20
+    ) -> Dict[str, int]:
+        """
+        Bulk UPSERT multiple teams.
+        
+        Args:
+            teams_data: List of team data dictionaries
+            batch_size: Number of teams to process per batch
+        
+        Returns:
+            Dictionary with counts of inserted/updated teams
+        """
+        session = self.async_session_maker()
+        inserted = 0
+        updated = 0
+        errors = 0
+        
+        try:
+            for i in range(0, len(teams_data), batch_size):
+                batch = teams_data[i:i + batch_size]
+                
+                for team_data in batch:
+                    try:
+                        await self.upsert_team(team_data, session)
+                        inserted += 1
+                    except Exception as e:
+                        logger.error(f"Error in bulk upsert for team {team_data.get('id')}: {str(e)}")
+                        errors += 1
+                
+                # Commit batch
+                await session.commit()
+                logger.info(f"Processed batch {i // batch_size + 1}: {len(batch)} teams")
+            
+            return {
+                'total': len(teams_data),
                 'inserted': inserted,
                 'updated': updated,
                 'errors': errors

@@ -1,10 +1,12 @@
-__pycache__
-*.pyc
-*.pyo
-*.pyd
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
 .Python
 env/
 venv/
+ENV/
 .venv
 pip-log.txt
 pip-delete-this-directory.txt
@@ -16,10 +18,59 @@ nosetests.xml
 coverage.xml
 *.cover
 *.log
-.git
-.mypy_cache
-.pytest_cache
-.hypothesis
+.mypy_cache/
+.pytest_cache/
+.hypothesis/
 *.egg-info/
 dist/
 build/
+*.egg
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+docs/
+README*
+
+# Tests
+test_*.py
+*_test.py
+tests/
+.pytest_cache/
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# ML Models (large files, should be mounted as volumes)
+*.pkl
+*.joblib
+*.h5
+*.hdf5
+models/
+checkpoints/
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp

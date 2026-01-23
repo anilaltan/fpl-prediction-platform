@@ -39,10 +39,27 @@ A professional SaaS platform for Fantasy Premier League point prediction using M
    - Backend API: http://localhost:8000
    - API Docs: http://localhost:8000/docs
 
+## 📚 Documentation
+
+All project documentation is organized in the [`docs/`](docs/) directory:
+
+- **[Architecture Map](ARCHITECTURE_MAP.md)** - System architecture and components
+- **[Refactoring Documentation](docs/refactoring/)** - Recent refactoring work
+- **[Backend Documentation](docs/backend/)** - Backend-specific guides
+- **[Frontend Documentation](docs/frontend/)** - Frontend component docs
+- **[Cleanup Documentation](docs/cleanup/)** - Cleanup summaries
+
+See [docs/README.md](docs/README.md) for complete documentation index.
+
 ## 📁 Project Structure
 
 ```
 .
+├── docs/                     # All documentation (organized)
+│   ├── refactoring/         # Refactoring task summaries
+│   ├── backend/            # Backend documentation
+│   ├── frontend/           # Frontend documentation
+│   └── cleanup/            # Cleanup summaries
 ├── backend/
 │   ├── app/
 │   │   ├── main.py          # FastAPI application

@@ -1,0 +1,69 @@
+{
+	"meta": {
+		"generatedAt": "2026-01-20T15:45:01.250Z",
+		"tasksAnalyzed": 7,
+		"totalTasks": 10,
+		"analysisCount": 7,
+		"thresholdScore": 5,
+		"projectName": "Task Master",
+		"usedResearch": false
+	},
+	"complexityAnalysis": [
+		{
+			"taskId": 4,
+			"taskTitle": "Phase 0: Basic Feature Engineering & Baseline Model",
+			"complexityScore": 5,
+			"recommendedSubtasks": 0,
+			"expansionPrompt": "No expansion needed as the current subtasks already cover the feature engineering, temporal validation, model training, evaluation, and persistence requirements.",
+			"reasoning": "This task involves standard machine learning pipeline development. The primary challenge is ensuring the expanding window validation is implemented correctly to prevent data leakage, but the scope is well-defined and uses established libraries like XGBoost."
+		},
+		{
+			"taskId": 5,
+			"taskTitle": "Single-Gameweek ILP Optimization Engine",
+			"complexityScore": 6,
+			"recommendedSubtasks": 4,
+			"expansionPrompt": "Break down the implementation of the PuLP optimization model, focusing on objective function definition, position constraints, team-limit constraints, and solver integration.",
+			"reasoning": "Integer Linear Programming (ILP) requires precise mathematical formulation. Translating FPL rules (budget, position quotas, and team limits) into linear constraints is a specialized task that requires careful validation to ensure the solver finds feasible, optimal solutions."
+		},
+		{
+			"taskId": 6,
+			"taskTitle": "External Data Integration & Advanced Features",
+			"complexityScore": 8,
+			"recommendedSubtasks": 0,
+			"expansionPrompt": "No expansion needed as the subtasks already address scraping, entity resolution, Bayesian optimization, and statistical modeling (Poisson).",
+			"reasoning": "This task is highly complex due to the variety of technical domains involved: web scraping (which is inherently brittle), fuzzy entity resolution for player mapping, and advanced statistical methods like Bayesian Optimization and Poisson Regression."
+		},
+		{
+			"taskId": 7,
+			"taskTitle": "Component-Based ML Predictive Engine",
+			"complexityScore": 9,
+			"recommendedSubtasks": 0,
+			"expansionPrompt": "No expansion needed as the subtasks cover individual model development for xMins, Attack, and Defense, plus the final aggregation logic.",
+			"reasoning": "Building a multi-model ensemble is significantly more difficult than a single regressor. It requires managing three distinct training pipelines, ensuring feature consistency across models, and implementing a custom aggregation formula that correctly weights probabilities."
+		},
+		{
+			"taskId": 8,
+			"taskTitle": "Multi-Period Optimization & Strategy Generator",
+			"complexityScore": 9,
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "Detail the steps to extend the ILP for multi-period planning, including transfer logic, cost penalization, captaincy selection, and performance benchmarking for the multi-week horizon.",
+			"reasoning": "Moving from single-period to multi-period optimization introduces state-dependency (transfers link one week to the next). This exponentially increases the complexity of the ILP formulation and requires modeling transfer costs and free transfer carry-over logic."
+		},
+		{
+			"taskId": 9,
+			"taskTitle": "Market Intelligence & Ownership Arbitrage",
+			"complexityScore": 4,
+			"recommendedSubtasks": 0,
+			"expansionPrompt": "No expansion needed as the subtasks already cover schema design, ranking logic, scoring, and persistence.",
+			"reasoning": "This is primarily a data processing and analytical task. While it requires careful ranking logic, it does not involve the high-stakes mathematical modeling or brittle integrations found in other tasks."
+		},
+		{
+			"taskId": 10,
+			"taskTitle": "FastAPI Backend & Next.js Dashboard",
+			"complexityScore": 7,
+			"recommendedSubtasks": 0,
+			"expansionPrompt": "No expansion needed as the subtasks cover API development, frontend foundation, and specific visualization components.",
+			"reasoning": "Full-stack integration for data-heavy applications is challenging. The complexity lies in creating performant visualizations (like the pitch view and heatmap) and ensuring the frontend state correctly reflects the complex outputs of the optimization engine."
+		}
+	]
+}

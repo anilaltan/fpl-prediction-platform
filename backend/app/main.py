@@ -3,15 +3,31 @@ from fastapi.routing import APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.exc import IntegrityError
 import pandas as pd
+import numpy as np
 from typing import List, Optional, Dict
 from app.database import engine, Base, get_db
+from app.exceptions import (
+    AppException,
+    ValidationError,
+    NotFoundError,
+    DatabaseError,
+    ExternalAPIError,
+    ModelError,
+    RateLimitError,
+    handle_app_exception,
+    handle_generic_exception,
+    handle_http_exception
+)
 from app.services.feature_engineering import FeatureEngineeringService
-from app.services.fpl_api import FPLAPIService
+from app.services.fpl import FPLAPIService
 from app.schemas import (
     FormAlphaOptimizeRequest, FormAlphaResponse,
     FDRFitRequest, FDRResponse, DefConFeaturesResponse,
+    StochasticFDRRequest, StochasticFDRResponse,
+    FDRComparisonResponse, FDRVerificationResponse,
     XMinsPredictionRequest, XMinsPredictionResponse,
     AttackPredictionRequest, AttackPredictionResponse,
     DefensePredictionRequest, DefensePredictionResponse,
@@ -27,12 +43,14 @@ from app.schemas import (
     UnderstatPlayerData, FBrefDefensiveData, EnrichedPlayerData,
     PlayerResolutionRequest, PlayerResolutionResponse,
     BulkResolutionRequest, BulkResolutionResponse,
-    ManualMappingRequest,
+    ManualMappingRequest, OverrideMappingRequest,
+    BulkResolutionReport,
     DataCleaningRequest, DataCleaningResponse,
     BulkCleaningRequest, BulkCleaningResponse,
-    DefConMetricsResponse
+    DefConMetricsResponse,
+    MarketIntelligenceResponse, MarketIntelligencePlayer,
+    TeamPlanRequest, TeamPlanResponse, TransferStrategy
 )
-from app.services.predictive_engine import PredictiveEngine
 from app.services.team_solver import TeamSolver
 from app.services.risk_management import RiskManagementService
 from app.services.backtesting import BacktestingEngine
@@ -41,6 +59,7 @@ from app.services.third_party_data import ThirdPartyDataService, UnderstatServic
 from app.services.entity_resolution import EntityResolutionService
 from app.services.data_cleaning import DataCleaningService
 from app.services.etl_service import ETLService
+from app.services.market_intelligence import MarketIntelligenceService
 from app.models import Player, PlayerGameweekStats, Prediction
 import logging
 import asyncio
@@ -58,18 +77,42 @@ app = FastAPI(
     version="2.0.0"
 )
 
+# =============================================================================
+# CENTRALIZED ERROR HANDLING (Task 4.1)
+# =============================================================================
+
+@app.exception_handler(AppException)
+async def app_exception_handler(request, exc: AppException):
+    """Handle application-specific exceptions."""
+    return handle_app_exception(exc)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc: HTTPException):
+    """Handle FastAPI HTTPExceptions with standardized format."""
+    return handle_http_exception(exc)
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request, exc: Exception):
+    """Handle all other exceptions and convert to standardized format."""
+    return handle_generic_exception(exc)
+
 # Initialize services
-feature_service = FeatureEngineeringService()
 fpl_api = FPLAPIService()
-predictive_engine = PredictiveEngine()
-team_solver = TeamSolver()
-risk_service = RiskManagementService()
-backtesting_engine = BacktestingEngine()
-ml_engine = PLEngine()
 third_party_service = ThirdPartyDataService()
 entity_resolution = EntityResolutionService()
 data_cleaning = DataCleaningService()
 etl_service = ETLService()
+feature_service = FeatureEngineeringService(
+    third_party_service=third_party_service,
+    db_session=None  # Will be passed per-request via Depends(get_db)
+)
+team_solver = TeamSolver()
+risk_service = RiskManagementService()
+backtesting_engine = BacktestingEngine()
+ml_engine = PLEngine()
+market_intelligence_service = MarketIntelligenceService()
 
 # =============================================================================
 # GLOBAL IN-MEMORY CACHE SYSTEM (Graceful Degradation Architecture)
@@ -353,10 +396,15 @@ async def update_predictions_endpoint(
 # Feature Engineering Endpoints
 
 @app.post("/api/features/optimize-form-alpha", response_model=FormAlphaResponse)
-async def optimize_form_alpha(request: FormAlphaOptimizeRequest):
+async def optimize_form_alpha(
+    request: FormAlphaOptimizeRequest,
+    db: Session = Depends(get_db),
+    store_result: bool = True
+):
     """
     Optimize form alpha coefficient using Bayesian Optimization.
     Minimizes RMSE by finding optimal exponential decay weight.
+    Tracks convergence and stores results in database.
     """
     try:
         # Convert to DataFrame
@@ -368,22 +416,57 @@ async def optimize_form_alpha(request: FormAlphaOptimizeRequest):
                 detail="Historical data must include 'points' column"
             )
         
-        # Optimize alpha
-        optimal_alpha = feature_service.optimize_form_alpha(df)
-        
-        # Calculate final RMSE
-        rmse = feature_service.form_alpha._calculate_rmse(
-            optimal_alpha, 
-            df, 
-            request.lookback_weeks
+        # Optimize alpha with convergence tracking
+        result = feature_service.optimize_form_alpha(
+            df,
+            lookback_weeks=request.lookback_weeks,
+            n_calls=request.n_calls if hasattr(request, 'n_calls') else 50
         )
+        
+        # Store result in database if requested
+        if store_result:
+            try:
+                from app.models import FormAlpha
+                from sqlalchemy import and_
+                
+                # Get current gameweek (or use 1 as default)
+                current_gw = fpl_api.get_current_gameweek() if hasattr(fpl_api, 'get_current_gameweek') else 1
+                
+                # Check if entry exists for this gameweek
+                existing = db.query(FormAlpha).filter(
+                    FormAlpha.gameweek == current_gw
+                ).first()
+                
+                if existing:
+                    # Update existing entry
+                    existing.optimal_alpha = result['optimal_alpha']
+                    existing.rmse = result['best_rmse']
+                    existing.lookback_weeks = request.lookback_weeks
+                else:
+                    # Create new entry
+                    new_entry = FormAlpha(
+                        gameweek=current_gw,
+                        optimal_alpha=result['optimal_alpha'],
+                        rmse=result['best_rmse'],
+                        lookback_weeks=request.lookback_weeks
+                    )
+                    db.add(new_entry)
+                
+                db.commit()
+                logger.info(f"Stored optimized alpha for gameweek {current_gw}")
+            except Exception as e:
+                logger.warning(f"Failed to store alpha in database: {str(e)}")
+                db.rollback()
         
         return FormAlphaResponse(
-            optimal_alpha=optimal_alpha,
-            rmse=rmse,
-            lookback_weeks=request.lookback_weeks
+            optimal_alpha=result['optimal_alpha'],
+            rmse=result['best_rmse'],
+            lookback_weeks=request.lookback_weeks,
+            converged=result.get('converged', False),
+            iterations=result.get('iterations', 0)
         )
     except Exception as e:
+        logger.error(f"Error optimizing form alpha: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -441,6 +524,71 @@ async def get_team_fdr(team_name: str):
     )
 
 
+@app.post("/api/features/stochastic-fdr", response_model=StochasticFDRResponse)
+async def get_stochastic_fdr(request: StochasticFDRRequest):
+    """
+    Calculate stochastic fixture difficulty (FDR 2.0) using Poisson distribution.
+    Provides probability distribution of outcomes rather than just expected value.
+    """
+    if not feature_service.fdr_model.is_fitted:
+        raise HTTPException(
+            status_code=400,
+            detail="FDR model not fitted. Call /api/features/fit-fdr first."
+        )
+    
+    try:
+        result = feature_service.fdr_model.get_stochastic_fdr(
+            team=request.team,
+            opponent=request.opponent,
+            is_home=request.is_home,
+            n_simulations=request.n_simulations
+        )
+        
+        return StochasticFDRResponse(**result)
+    except Exception as e:
+        logger.error(f"Error calculating stochastic FDR: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/features/compare-fdr", response_model=FDRComparisonResponse)
+async def compare_fdr_with_fpl(request: FDRFitRequest):
+    """
+    Compare FDR 2.0 ratings with official FPL FDR.
+    Requires FDR model to be fitted first.
+    """
+    if not feature_service.fdr_model.is_fitted:
+        raise HTTPException(
+            status_code=400,
+            detail="FDR model not fitted. Call /api/features/fit-fdr first."
+        )
+    
+    try:
+        result = feature_service.fdr_model.compare_with_fpl_fdr(request.fixtures)
+        return FDRComparisonResponse(**result)
+    except Exception as e:
+        logger.error(f"Error comparing FDR: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/features/verify-fdr", response_model=FDRVerificationResponse)
+async def verify_fdr_with_outcomes(request: FDRFitRequest):
+    """
+    Verify FDR 2.0 predictions correlate with actual goal outcomes in historical data.
+    """
+    if not feature_service.fdr_model.is_fitted:
+        raise HTTPException(
+            status_code=400,
+            detail="FDR model not fitted. Call /api/features/fit-fdr first."
+        )
+    
+    try:
+        result = feature_service.fdr_model.verify_with_actual_outcomes(request.fixtures)
+        return FDRVerificationResponse(**result)
+    except Exception as e:
+        logger.error(f"Error verifying FDR: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/features/defcon", response_model=DefConFeaturesResponse)
 async def get_defcon_features(
     player_id: int,
@@ -493,11 +641,12 @@ async def predict_xmins(request: XMinsPredictionRequest):
     Uses XGBoost or Random Forest model.
     """
     try:
-        p_start = predictive_engine.xmins_model.predict_start_probability(
+        ml_engine._ensure_models_loaded()
+        p_start = ml_engine.xmins_model.predict_start_probability(
             request.player_data,
             request.fixture_data
         )
-        expected_minutes = predictive_engine.xmins_model.predict_expected_minutes(
+        expected_minutes = ml_engine.xmins_model.predict_expected_minutes(
             request.player_data,
             request.fixture_data
         )
@@ -516,10 +665,23 @@ async def predict_attack(request: AttackPredictionRequest):
     Predict expected goals (xG) and expected assists (xA) using LightGBM.
     """
     try:
-        predictions = predictive_engine.attack_model.predict(
+        ml_engine._ensure_models_loaded()
+        # Extract opponent_data if available from fixture_data
+        opponent_data = None
+        if request.fixture_data:
+            opponent_team_id = request.fixture_data.get('opponent_team')
+            if opponent_team_id:
+                # Create basic opponent_data structure
+                opponent_data = {
+                    'xgc_per_90': 1.5,  # Default estimate
+                    'defense_strength': request.fdr_data.get('opponent_defense_strength', 0.0) if request.fdr_data else 0.0
+                }
+        
+        predictions = ml_engine.attack_model.predict(
             request.player_data,
             request.fixture_data,
-            request.fdr_data
+            request.fdr_data,
+            opponent_data
         )
         
         return AttackPredictionResponse(
@@ -537,21 +699,27 @@ async def predict_defense(request: DefensePredictionRequest):
     Formula: xCS = e^(-λ) where λ is expected goals conceded.
     """
     try:
-        xcs = predictive_engine.defense_model.predict_clean_sheet_probability(
-            request.team_data,
-            request.opponent_data,
-            request.is_home
+        ml_engine._ensure_models_loaded()
+        xcs = ml_engine.defense_model.predict_clean_sheet_probability(
+            team_data=request.team_data,
+            opponent_data=request.opponent_data,
+            is_home=request.is_home
         )
         
-        expected_goals_conceded = predictive_engine.defense_model.calculate_expected_goals_conceded(
-            request.team_data,
-            request.opponent_data,
-            request.is_home
-        )
+        # Calculate expected goals conceded (λ) from Poisson formula
+        # If xCS = e^(-λ), then λ = -ln(xCS)
+        if xcs > 0:
+            expected_goals_conceded = float(-np.log(xcs))
+        else:
+            # Fallback: estimate from team defense strength
+            team_defense = float(request.team_data.get('defense_strength', 1.0))
+            opponent_attack = float(request.opponent_data.get('attack_strength', 1.0))
+            home_factor = 0.9 if request.is_home else 1.0
+            expected_goals_conceded = 1.5 * (1.0 / max(0.1, team_defense)) * opponent_attack * home_factor
         
         return DefensePredictionResponse(
             xcs=xcs,
-            expected_goals_conceded=expected_goals_conceded
+            expected_goals_conceded=float(np.clip(expected_goals_conceded, 0.0, 5.0))
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -560,18 +728,35 @@ async def predict_defense(request: DefensePredictionRequest):
 @app.post("/api/predictive/momentum", response_model=MomentumPredictionResponse)
 async def predict_momentum(request: MomentumPredictionRequest):
     """
-    Predict momentum and trend using LSTM time-series analysis.
+    Predict momentum and trend using simple trend analysis.
+    Note: LSTM momentum layer removed - using simple trend calculation.
     """
     try:
-        momentum = predictive_engine.momentum_layer.predict_momentum(
-            request.historical_points,
-            request.forecast_steps
-        )
+        historical_points = request.historical_points
+        if len(historical_points) < 2:
+            return MomentumPredictionResponse(
+                momentum=0.0,
+                trend=0.0,
+                forecast=historical_points[0] if historical_points else 0.0
+            )
+        
+        # Simple trend calculation
+        recent = np.mean(historical_points[:min(3, len(historical_points))])
+        if len(historical_points) >= 6:
+            previous = np.mean(historical_points[3:6])
+        elif len(historical_points) >= 3:
+            previous = np.mean(historical_points[1:])
+        else:
+            previous = historical_points[-1] if len(historical_points) > 1 else recent
+        
+        trend = float(recent - previous)
+        forecast = float(recent + trend)
+        momentum = trend  # Same as trend for simplicity
         
         return MomentumPredictionResponse(
-            momentum=momentum['momentum'],
-            trend=momentum['trend'],
-            forecast=momentum['forecast']
+            momentum=momentum,
+            trend=trend,
+            forecast=forecast
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -587,23 +772,40 @@ async def predict_comprehensive(request: ComprehensivePredictionRequest):
     - Momentum (trend, forecast)
     """
     try:
-        predictions = predictive_engine.predict_comprehensive(
+        # Use PLEngine's calculate_expected_points for main predictions
+        predictions = ml_engine.calculate_expected_points(
             player_data=request.player_data,
-            historical_points=request.historical_points,
             fixture_data=request.fixture_data,
             fdr_data=request.fdr_data,
             team_data=request.team_data,
-            opponent_data=request.opponent_data
+            opponent_data=request.opponent_data,
+            historical_points=request.historical_points
         )
         
+        # Calculate momentum/trend from historical points
+        historical_points = request.historical_points or []
+        if len(historical_points) >= 2:
+            recent = np.mean(historical_points[:min(3, len(historical_points))])
+            if len(historical_points) >= 6:
+                previous = np.mean(historical_points[3:6])
+            elif len(historical_points) >= 3:
+                previous = np.mean(historical_points[1:])
+            else:
+                previous = historical_points[-1] if len(historical_points) > 1 else recent
+            trend = float(recent - previous)
+            momentum = trend
+        else:
+            momentum = 0.0
+            trend = 0.0
+        
         return ComprehensivePredictionResponse(
-            p_start=predictions['p_start'],
-            expected_minutes=predictions['expected_minutes'],
-            xg=predictions['xg'],
-            xa=predictions['xa'],
-            xcs=predictions['xcs'],
-            momentum=predictions['momentum'],
-            trend=predictions['trend']
+            p_start=predictions.get('p_start', 0.0),
+            expected_minutes=predictions.get('xmins', 0.0),
+            xg=predictions.get('xg', 0.0),
+            xa=predictions.get('xa', 0.0),
+            xcs=predictions.get('xcs', 0.0),
+            momentum=momentum,
+            trend=trend
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -672,6 +874,247 @@ async def optimize_team(request: TeamOptimizationRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Optimization error: {str(e)}")
+
+
+# New Team Optimization Endpoints (Task 10.1)
+
+@app.post("/team/optimize", response_model=TeamOptimizationResponse)
+async def optimize_team_endpoint(request: TeamOptimizationRequest):
+    """
+    Optimize FPL team selection for a single gameweek using ILP.
+    This endpoint provides a simplified single-gameweek optimization.
+    
+    Args:
+        request: Team optimization request with players and constraints
+    
+    Returns:
+        Optimized team with squad, starting XI, and expected points
+    """
+    try:
+        # Convert Pydantic models to dicts for solver
+        players_data = []
+        for player in request.players:
+            player_dict = {
+                'id': player.id,
+                'name': player.name,
+                'position': player.position,
+                'price': player.price,
+                'team_id': player.team_id,
+                'team_name': player.team_name,
+                'expected_points_gw1': player.expected_points_gw1
+            }
+            # For single gameweek, use GW1 points for all weeks
+            for week in range(2, request.horizon_weeks + 1):
+                attr_name = f'expected_points_gw{week}'
+                if hasattr(player, attr_name) and getattr(player, attr_name) is not None:
+                    player_dict[attr_name] = getattr(player, attr_name)
+                else:
+                    player_dict[attr_name] = player.expected_points_gw1
+            players_data.append(player_dict)
+        
+        # Create solver with custom parameters
+        solver = TeamSolver(
+            budget=request.budget,
+            horizon_weeks=1,  # Single gameweek optimization
+            free_transfers=request.free_transfers
+        )
+        
+        # Solve
+        solution = solver.solve(
+            players=players_data,
+            current_squad=request.current_squad,
+            locked_players=request.locked_players,
+            excluded_players=request.excluded_players
+        )
+        
+        # Convert to response format
+        return TeamOptimizationResponse(**solution)
+        
+    except Exception as e:
+        logger.error(f"Error in team optimization: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Optimization error: {str(e)}")
+
+
+@app.post("/team/plan", response_model=TeamPlanResponse)
+async def plan_team_multi_period(request: TeamPlanRequest):
+    """
+    Generate multi-period transfer strategy (3-5 week horizon).
+    Optimizes team selection across multiple gameweeks with transfer planning.
+    
+    Args:
+        request: Team planning request with players and multi-week constraints
+    
+    Returns:
+        Multi-period plan with squads, starting XIs, and transfer strategy for each week
+    """
+    try:
+        # Convert Pydantic models to dicts for solver
+        players_data = []
+        for player in request.players:
+            player_dict = {
+                'id': player.id,
+                'name': player.name,
+                'position': player.position,
+                'price': player.price,
+                'team_id': player.team_id,
+                'team_name': player.team_name,
+                'expected_points_gw1': player.expected_points_gw1
+            }
+            # Add expected points for all weeks in horizon
+            for week in range(2, request.horizon_weeks + 1):
+                attr_name = f'expected_points_gw{week}'
+                if hasattr(player, attr_name) and getattr(player, attr_name) is not None:
+                    player_dict[attr_name] = getattr(player, attr_name)
+                else:
+                    # Fallback to GW1 if not provided
+                    player_dict[attr_name] = player.expected_points_gw1
+            players_data.append(player_dict)
+        
+        # Create solver with multi-period parameters
+        solver = TeamSolver(
+            budget=request.budget,
+            horizon_weeks=request.horizon_weeks,
+            free_transfers=request.free_transfers
+        )
+        
+        # Solve multi-period optimization
+        solution = solver.solve(
+            players=players_data,
+            current_squad=request.current_squad,
+            locked_players=request.locked_players,
+            excluded_players=request.excluded_players
+        )
+        
+        # Convert transfers to TransferStrategy format
+        transfer_strategy = []
+        for week, transfer_info in solution.get('transfers', {}).items():
+            transfer_strategy.append(TransferStrategy(
+                gameweek=week,
+                transfers_in=transfer_info.get('in', []),
+                transfers_out=transfer_info.get('out', []),
+                transfer_count=transfer_info.get('count', 0),
+                transfer_cost=transfer_info.get('cost', 0.0),
+                expected_points_gain=solution.get('points_breakdown', {}).get(week, {}).get('expected_points', 0.0)
+            ))
+        
+        # Calculate net expected points (total points - transfer costs)
+        total_transfer_cost = sum(ts.transfer_cost for ts in transfer_strategy)
+        net_expected_points = solution.get('total_points', 0.0) - total_transfer_cost
+        
+        return TeamPlanResponse(
+            status=solution.get('status', 'Unknown'),
+            optimal=solution.get('optimal', False),
+            horizon_weeks=request.horizon_weeks,
+            squads=solution.get('squads', {}),
+            starting_xis=solution.get('starting_xis', {}),
+            transfer_strategy=transfer_strategy,
+            total_expected_points=solution.get('total_points', 0.0),
+            total_transfer_cost=total_transfer_cost,
+            net_expected_points=net_expected_points,
+            budget_used=solution.get('budget_used', {})
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in team planning: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Planning error: {str(e)}")
+
+
+@app.get("/market/intelligence", response_model=MarketIntelligenceResponse)
+async def get_market_intelligence(
+    gameweek: Optional[int] = None,
+    season: str = "2025-26",
+    db: Session = Depends(get_db)
+):
+    """
+    Get market intelligence with ownership arbitrage analysis.
+    Identifies differentials (high xP, low ownership) and overvalued players (low xP, high ownership).
+    
+    Args:
+        gameweek: Gameweek number (default: current gameweek)
+        season: Season string (default: "2025-26")
+        db: Database session
+    
+    Returns:
+        Market intelligence with player rankings, arbitrage scores, and categories
+    """
+    try:
+        # Get gameweek if not provided
+        if gameweek is None:
+            gameweek = await _get_current_gameweek()
+        
+        # Calculate player ranks
+        df = market_intelligence_service.calculate_player_ranks(
+            db=db,
+            gameweek=gameweek,
+            season=season,
+            use_fpl_api_ownership=True
+        )
+        
+        if df.empty:
+            logger.warning(f"No player data found for gameweek {gameweek}")
+            return MarketIntelligenceResponse(
+                gameweek=gameweek,
+                season=season,
+                players=[],
+                total_players=0,
+                differentials_count=0,
+                overvalued_count=0,
+                neutral_count=0
+            )
+        
+        # Calculate arbitrage scores and categories
+        df = market_intelligence_service.calculate_arbitrage_scores_and_categories(df)
+        
+        # Get player details from database (Player.id is the FPL ID)
+        player_ids = df['player_id'].tolist()
+        players_db = db.query(Player).filter(Player.id.in_(player_ids)).options(
+            # Eager load team relationship
+            joinedload(Player.team)
+        ).all()
+        player_map = {p.id: p for p in players_db}
+        
+        # Build response
+        market_players = []
+        for _, row in df.iterrows():
+            player_db = player_map.get(row['player_id'])
+            if not player_db:
+                continue
+            
+            # Get team name from relationship or use 'Unknown'
+            team_name = player_db.team.name if player_db.team else 'Unknown'
+            
+            market_players.append(MarketIntelligencePlayer(
+                player_id=row['player_id'],
+                name=row['name'],
+                position=player_db.position,
+                team=team_name,
+                price=float(player_db.price) if player_db.price else 0.0,
+                xp=float(row['xp']),
+                ownership=float(row['ownership']),
+                xp_rank=int(row['xp_rank']),
+                ownership_rank=int(row['ownership_rank']),
+                arbitrage_score=float(row['arbitrage_score']),
+                category=row['category']
+            ))
+        
+        # Count categories
+        differentials_count = sum(1 for p in market_players if p.category == 'Differential')
+        overvalued_count = sum(1 for p in market_players if p.category == 'Overvalued')
+        neutral_count = sum(1 for p in market_players if p.category == 'Neutral')
+        
+        return MarketIntelligenceResponse(
+            gameweek=gameweek,
+            season=season,
+            players=market_players,
+            total_players=len(market_players),
+            differentials_count=differentials_count,
+            overvalued_count=overvalued_count,
+            neutral_count=neutral_count
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in market intelligence: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Market intelligence error: {str(e)}")
 
 
 # Risk Management Endpoints
@@ -910,6 +1353,96 @@ async def run_backtest(request: BacktestRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Model Performance Endpoints
+
+@app.get("/api/models/performance")
+async def get_model_performance(
+    season: str = "2025-26",
+    db: Session = Depends(get_db)
+):
+    """
+    Get model performance metrics including backtest summaries and results.
+    """
+    try:
+        from app.models import BacktestSummary, BacktestResult, ModelPerformance
+        
+        # Get backtest summaries
+        summaries = db.query(BacktestSummary).filter(
+            BacktestSummary.season == season
+        ).all()
+        
+        # Get backtest results (detailed per-gameweek)
+        results = db.query(BacktestResult).filter(
+            BacktestResult.season == season
+        ).order_by(BacktestResult.gameweek).all()
+        
+        # Get model performance records
+        model_perf = db.query(ModelPerformance).order_by(
+            ModelPerformance.gameweek
+        ).all()
+        
+        import math
+        
+        def safe_float(value):
+            """Convert value to float, handling None, inf, and nan."""
+            if value is None:
+                return None
+            try:
+                f = float(value)
+                if math.isnan(f) or math.isinf(f):
+                    return None
+                return f
+            except (ValueError, TypeError):
+                return None
+        
+        return {
+            "season": season,
+            "summaries": [
+                {
+                    "model_version": s.model_version,
+                    "methodology": s.methodology,
+                    "season": s.season,
+                    "total_weeks_tested": s.total_weeks_tested,
+                    "overall_rmse": safe_float(s.overall_rmse),
+                    "overall_mae": safe_float(s.overall_mae),
+                    "overall_spearman_corr": safe_float(s.overall_spearman_corr),
+                    "r_squared": safe_float(s.r_squared),
+                    "total_predictions": s.total_predictions,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                    "updated_at": s.updated_at.isoformat() if s.updated_at else None
+                }
+                for s in summaries
+            ],
+            "results": [
+                {
+                    "model_version": r.model_version,
+                    "methodology": r.methodology,
+                    "gameweek": r.gameweek,
+                    "rmse": safe_float(r.rmse),
+                    "mae": safe_float(r.mae),
+                    "spearman_corr": safe_float(r.spearman_corr),
+                    "n_predictions": r.n_predictions,
+                    "created_at": r.created_at.isoformat() if r.created_at else None
+                }
+                for r in results
+            ],
+            "model_performance": [
+                {
+                    "model_version": m.model_version,
+                    "gameweek": m.gameweek,
+                    "mae": safe_float(m.mae),
+                    "rmse": safe_float(m.rmse),
+                    "accuracy": safe_float(m.accuracy),
+                    "created_at": m.created_at.isoformat() if m.created_at else None
+                }
+                for m in model_perf
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error fetching model performance: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching model performance: {str(e)}")
+
+
 # Frontend Integration Endpoints
 
 @app.get("/api/players/all", response_model=List[PlayerDisplayData])
@@ -932,28 +1465,45 @@ async def get_all_players(
         limit: Optional limit on number of players to return
         use_next_gameweek: If True, uses next/upcoming gameweek (for Dashboard). Default: False
     """
-    # ==========================================================================
-    # STEP 0: GET GAMEWEEK IF NOT PROVIDED
-    # ==========================================================================
-    if gameweek is None:
-        if use_next_gameweek:
-            # Dashboard mode: Use next/upcoming gameweek
-            gameweek = await _get_next_gameweek()
-            logger.info(f"[BATCH] Using next gameweek for Dashboard: {gameweek}")
-        else:
-            # Default mode: Use current gameweek
-            gameweek = await _get_current_gameweek()
-            logger.info(f"[BATCH] Using current gameweek: {gameweek}")
+    try:
+        # ==========================================================================
+        # STEP 0: GET GAMEWEEK IF NOT PROVIDED
+        # ==========================================================================
+        if gameweek is None:
+            try:
+                if use_next_gameweek:
+                    # Dashboard mode: Use next/upcoming gameweek
+                    gameweek = await _get_next_gameweek()
+                    logger.info(f"[BATCH] Using next gameweek for Dashboard: {gameweek}")
+                else:
+                    # Default mode: Use current gameweek
+                    gameweek = await _get_current_gameweek()
+                    logger.info(f"[BATCH] Using current gameweek: {gameweek}")
+            except Exception as gw_error:
+                logger.error(f"[BATCH] Failed to get gameweek: {str(gw_error)}")
+                gameweek = 1  # Fallback to gameweek 1
+        
+        # Ensure gameweek is valid
+        if gameweek is None or gameweek < 1:
+            gameweek = 1
+            logger.warning(f"[BATCH] Invalid gameweek, using default: 1")
+        
+        # ==========================================================================
+        # STEP 1: CHECK GLOBAL CACHE FIRST (Fastest path)
+        # ==========================================================================
+        try:
+            cached_players = _get_cached_players(gameweek)
+            if cached_players is not None:
+                logger.info(f"[CACHE HIT] Returning {len(cached_players)} cached players for GW{gameweek}")
+                if limit:
+                    return cached_players[:limit]
+                return cached_players
+        except Exception as cache_error:
+            logger.warning(f"[CACHE] Cache lookup failed: {str(cache_error)}, continuing...")
     
-    # ==========================================================================
-    # STEP 1: CHECK GLOBAL CACHE FIRST (Fastest path)
-    # ==========================================================================
-    cached_players = _get_cached_players(gameweek)
-    if cached_players is not None:
-        logger.info(f"[CACHE HIT] Returning {len(cached_players)} cached players for GW{gameweek}")
-        if limit:
-            return cached_players[:limit]
-        return cached_players
+    except Exception as outer_error:
+        logger.error(f"[BATCH] Outer error in get_all_players: {str(outer_error)}")
+        # Fall through to try block below
     
     try:
         # ======================================================================
@@ -966,42 +1516,94 @@ async def get_all_players(
         
         logger.info(f"[BATCH] Loaded {len(predictions)} predictions from database for GW{gameweek}")
         
-        # Create prediction map by fpl_id
+        # Create prediction map by fpl_id (Prediction.fpl_id matches Player.id)
         prediction_map = {p.fpl_id: p for p in predictions}
         
         # ======================================================================
         # STEP 3: FETCH ALL PLAYERS AND JOIN WITH PREDICTIONS
+        # OPTIMIZATION: Limit query if too many players to prevent timeout
         # ======================================================================
-        players = db.query(Player).all()
+        # Use joinedload to eagerly load team relationship to avoid lazy loading issues
+        # If no limit specified, default to 500 players max to prevent timeout
+        max_players = limit if limit else 500
+        players = db.query(Player).options(joinedload(Player.team)).limit(max_players).all()
         
         if not players:
             logger.warning("[BATCH] No players in database")
             return []
         
+        logger.info(f"[BATCH] Processing {len(players)} players (limit: {max_players})")
+        
         # ======================================================================
         # STEP 4: FETCH FPL BOOTSTRAP DATA ONCE (Ownership info)
+        # OPTIMIZATION: Use asyncio.wait_for with timeout to prevent blocking
         # ======================================================================
         ownership_map = {}
         try:
-            bootstrap = await fpl_api.get_bootstrap_data()
+            # Set a 5-second timeout for bootstrap data fetch
+            # If it takes longer, skip ownership data (non-critical)
+            bootstrap = await asyncio.wait_for(
+                fpl_api.get_bootstrap_data(),
+                timeout=5.0
+            )
             elements = bootstrap.get('elements', [])
             for element in elements:
                 fpl_id = element.get('id')
                 if fpl_id:
                     ownership_map[fpl_id] = float(element.get('selected_by_percent', 0.0))
+            logger.info(f"[FPL API] Loaded ownership data for {len(ownership_map)} players")
+        except asyncio.TimeoutError:
+            logger.warning("[FPL API] Bootstrap data fetch timed out (>5s), skipping ownership data")
         except Exception as e:
             logger.warning(f"[FPL API] Failed to fetch ownership data: {str(e)}")
         
         # ======================================================================
-        # STEP 5: BUILD RESPONSE FROM PREDICTIONS + PLAYER DATA
+        # STEP 5: PRE-FETCH FORM DATA IN BATCH (OPTIMIZATION - prevents N+1 queries)
+        # ======================================================================
+        player_ids = [p.id for p in players]
+        form_map = {}
+        
+        try:
+            # Get latest stats for all players in one batch query
+            # This replaces N individual queries with 1 batch query
+            from sqlalchemy import func
+            
+            # Get max gameweek per player using subquery
+            max_gw_subq = db.query(
+                PlayerGameweekStats.fpl_id,
+                func.max(PlayerGameweekStats.gameweek).label('max_gw')
+            ).filter(
+                PlayerGameweekStats.fpl_id.in_(player_ids),
+                PlayerGameweekStats.season == "2025-26"
+            ).group_by(PlayerGameweekStats.fpl_id).subquery()
+            
+            # Join to get actual stats for latest gameweek per player
+            latest_stats = db.query(PlayerGameweekStats).join(
+                max_gw_subq,
+                (PlayerGameweekStats.fpl_id == max_gw_subq.c.fpl_id) &
+                (PlayerGameweekStats.gameweek == max_gw_subq.c.max_gw)
+            ).filter(
+                PlayerGameweekStats.season == "2025-26"
+            ).all()
+            
+            for stat in latest_stats:
+                form_map[stat.fpl_id] = float(stat.total_points or 0) / 10.0
+            
+            logger.info(f"[FORM] Loaded form data for {len(form_map)} players in batch (replaced {len(player_ids)} individual queries)")
+        except Exception as form_batch_error:
+            logger.warning(f"[FORM] Batch form query failed: {str(form_batch_error)}, using 0.0 as default")
+            form_map = {}
+        
+        # ======================================================================
+        # STEP 6: BUILD RESPONSE FROM PREDICTIONS + PLAYER DATA
         # ======================================================================
         players_data = []
         missing_predictions = 0
         
         for player in players:
             try:
-                # Get prediction from database
-                prediction = prediction_map.get(player.fpl_id)
+                # Get prediction from database (Player.id is the FPL ID)
+                prediction = prediction_map.get(player.id)
                 
                 if prediction:
                     # Use pre-calculated prediction
@@ -1029,44 +1631,51 @@ async def get_all_players(
                     defcon_score = 0.0
                 
                 # Get ownership
-                ownership = ownership_map.get(player.fpl_id, 0.0)
+                ownership = ownership_map.get(player.id, 0.0)
                 
-                # Get form from latest stats (if available)
-                latest_stat = db.query(PlayerGameweekStats).filter(
-                    PlayerGameweekStats.fpl_id == player.fpl_id,
-                    PlayerGameweekStats.season == "2025-26"
-                ).order_by(PlayerGameweekStats.gameweek.desc()).first()
+                # Get form from pre-fetched batch map (much faster than per-player query)
+                form = form_map.get(player.id, 0.0)
                 
-                form = 0.0
-                if latest_stat:
-                    form = float(latest_stat.total_points or 0) / 10.0
+                # Get team name from relationship (safe handling)
+                try:
+                    team_name = player.team.name if player.team and hasattr(player.team, 'name') else 'Unknown'
+                except Exception:
+                    team_name = 'Unknown'
                 
-                # Create player display data
+                # Ensure all required fields are valid
+                player_id = int(player.id) if player.id is not None else 0
+                player_name = str(player.name) if player.name else 'Unknown Player'
+                player_position = str(player.position) if player.position else 'MID'
+                
+                # Create player display data with safe type conversions
                 players_data.append(PlayerDisplayData(
-                    id=player.id,
-                    fpl_id=player.fpl_id,
-                    name=player.name,
-                    position=player.position,
-                    team=player.team,
-                    price=player.price,
-                    expected_points=round(xp, 2),
-                    ownership_percent=round(ownership, 1),
-                    form=round(form, 1),
-                    xg=round(xg, 3),
-                    xa=round(xa, 3),
-                    xmins=round(xmins, 1),
-                    xcs=round(xcs, 3),
-                    defcon_score=round(defcon_score, 2)
+                    id=player_id,
+                    fpl_id=player_id,  # Player.id is the FPL ID
+                    name=player_name,
+                    position=player_position,
+                    team=str(team_name),
+                    price=float(player.price) if player.price is not None else 0.0,
+                    expected_points=float(round(xp, 2)),
+                    ownership_percent=float(round(ownership, 1)),
+                    form=float(round(form, 1)),
+                    xg=float(round(xg, 3)) if xg is not None else 0.0,
+                    xa=float(round(xa, 3)) if xa is not None else 0.0,
+                    xmins=float(round(xmins, 1)) if xmins is not None else 0.0,
+                    xcs=float(round(xcs, 3)) if xcs is not None else 0.0,
+                    defcon_score=float(round(defcon_score, 2)) if defcon_score is not None else 0.0
                 ))
                 
             except Exception as player_error:
-                logger.error(f"[SKIP] Player {player.fpl_id} ({player.name}): {str(player_error)}")
+                logger.error(f"[SKIP] Player {player.id} ({player.name}): {str(player_error)}")
                 continue
         
         # ======================================================================
-        # STEP 6: UPDATE GLOBAL CACHE
+        # STEP 7: UPDATE GLOBAL CACHE
         # ======================================================================
-        _update_cache(gameweek, players_data)
+        try:
+            _update_cache(gameweek, players_data)
+        except Exception as cache_error:
+            logger.warning(f"[CACHE] Failed to update cache: {str(cache_error)}")
         
         # Log summary
         logger.info(
@@ -1083,13 +1692,23 @@ async def get_all_players(
         # GRACEFUL DEGRADATION: Return basic data on catastrophic failure
         # ======================================================================
         logger.error(f"[BATCH ERROR] get_all_players failed: {str(e)}")
+        import traceback
+        logger.error(f"[BATCH ERROR] Traceback: {traceback.format_exc()}")
         
         # Try to return basic data instead of 500 error
         try:
-            return await _get_basic_player_data(db, limit)
+            basic_data = await _get_basic_player_data(db, limit)
+            if basic_data:
+                logger.info(f"[FALLBACK] Returning {len(basic_data)} basic player records")
+                return basic_data
         except Exception as fallback_error:
             logger.error(f"[FALLBACK FAILED] {str(fallback_error)}")
-            return []
+            import traceback
+            logger.error(f"[FALLBACK ERROR] Traceback: {traceback.format_exc()}")
+        
+        # Last resort: return empty list (better than 500 error)
+        logger.warning("[FALLBACK] Returning empty list as last resort")
+        return []
 
 
 async def _get_basic_player_data(db: Session, limit: Optional[int] = None) -> List[PlayerDisplayData]:
@@ -1098,29 +1717,45 @@ async def _get_basic_player_data(db: Session, limit: Optional[int] = None) -> Li
     Used when ML models are unavailable or during errors.
     """
     try:
-        query = db.query(Player)
+        # Use joinedload to eagerly load team relationship
+        query = db.query(Player).options(joinedload(Player.team))
         if limit:
             query = query.limit(limit)
         players = query.all()
         
         players_data = []
         for player in players:
-            players_data.append(PlayerDisplayData(
-                id=player.id,
-                fpl_id=player.fpl_id,
-                name=player.name,
-                position=player.position,
-                team=player.team,
-                price=player.price,
-                expected_points=2.0,  # Default baseline xP
-                ownership_percent=0.0,
-                form=0.0,
-                xg=0.0,
-                xa=0.0,
-                xmins=45.0,
-                xcs=0.0,
-                defcon_score=0.0
-            ))
+            try:
+                # Safe team name extraction
+                try:
+                    team_name = player.team.name if player.team and hasattr(player.team, 'name') else 'Unknown'
+                except Exception:
+                    team_name = 'Unknown'
+                
+                # Ensure all required fields are valid
+                player_id = int(player.id) if player.id is not None else 0
+                player_name = str(player.name) if player.name else 'Unknown Player'
+                player_position = str(player.position) if player.position else 'MID'
+                
+                players_data.append(PlayerDisplayData(
+                    id=player_id,
+                    fpl_id=player_id,  # Player.id is the FPL ID
+                    name=player_name,
+                    position=player_position,
+                    team=str(team_name),
+                    price=float(player.price) if player.price is not None else 0.0,
+                    expected_points=2.0,  # Default baseline xP
+                    ownership_percent=0.0,
+                    form=0.0,
+                    xg=0.0,
+                    xa=0.0,
+                    xmins=45.0,
+                    xcs=0.0,
+                    defcon_score=0.0
+                ))
+            except Exception as player_error:
+                logger.error(f"[BASIC] Failed to process player {getattr(player, 'id', 'unknown')}: {str(player_error)}")
+                continue
         
         logger.info(f"[FALLBACK] Returned basic data for {len(players_data)} players")
         return players_data
@@ -1710,42 +2345,81 @@ async def enrich_players_bulk(
 
 
 @app.get("/api/third-party/map-players")
-async def map_players_across_sources(season: str = "2025"):
+async def map_players_across_sources(season: str = "2025", db: Session = Depends(get_db)):
     """
     Create mapping between FPL players and third-party data sources.
-    Uses entity resolution to match player names.
+    Uses Entity Resolution Engine to match player names with high accuracy.
     """
     try:
         # Get FPL players
         bootstrap = await fpl_api.get_bootstrap_data()
         fpl_players = fpl_api.extract_players_from_bootstrap(bootstrap)
         
+        # Initialize services with Entity Resolution
+        understat_service = UnderstatService(
+            entity_resolution_service=entity_resolution,
+            db_session=db
+        )
+        fbref_service = FBrefService(
+            entity_resolution_service=entity_resolution,
+            db_session=db
+        )
+        
         # Get Understat data
-        understat_service = UnderstatService()
         understat_data = await understat_service.get_player_stats(season)
         
         # Get FBref data
-        fbref_service = FBrefService()
         fbref_data = await fbref_service.get_player_defensive_stats(season)
         
-        # Create mappings
-        understat_mapping = understat_service.map_to_fpl_players(understat_data, fpl_players)
-        fbref_mapping = fbref_service.map_to_fpl_players(fbref_data, fpl_players)
+        # Create mappings using Entity Resolution (async)
+        understat_mapping = await understat_service.map_to_fpl_players(
+            understat_data, 
+            fpl_players,
+            use_entity_resolution=True
+        )
+        fbref_mapping = await fbref_service.map_to_fpl_players(
+            fbref_data, 
+            fpl_players,
+            use_entity_resolution=True
+        )
+        
+        # Calculate match statistics
+        understat_high_confidence = sum(
+            1 for m in understat_mapping.values() 
+            if m.get('confidence', 0.0) >= 0.85
+        )
+        fbref_high_confidence = sum(
+            1 for m in fbref_mapping.values() 
+            if m.get('confidence', 0.0) >= 0.85
+        )
         
         return {
             'understat_mapping': {
                 'total_fpl_players': len(fpl_players),
                 'matched': len(understat_mapping),
+                'high_confidence_matches': understat_high_confidence,
+                'match_methods': {
+                    'entity_resolution': sum(1 for m in understat_mapping.values() if m.get('match_method') == 'entity_resolution'),
+                    'fuzzy_fallback': sum(1 for m in understat_mapping.values() if m.get('match_method') == 'fuzzy_fallback'),
+                    'simple_name_match': sum(1 for m in understat_mapping.values() if m.get('match_method') == 'simple_name_match'),
+                },
                 'mapping': understat_mapping
             },
             'fbref_mapping': {
                 'total_fpl_players': len(fpl_players),
                 'matched': len(fbref_mapping),
+                'high_confidence_matches': fbref_high_confidence,
+                'match_methods': {
+                    'entity_resolution': sum(1 for m in fbref_mapping.values() if m.get('match_method') == 'entity_resolution'),
+                    'fuzzy_fallback': sum(1 for m in fbref_mapping.values() if m.get('match_method') == 'fuzzy_fallback'),
+                    'simple_name_match': sum(1 for m in fbref_mapping.values() if m.get('match_method') == 'simple_name_match'),
+                },
                 'mapping': fbref_mapping
             }
         }
         
     except Exception as e:
+        logger.error(f"Error mapping players: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1986,6 +2660,55 @@ async def add_manual_mapping(request: ManualMappingRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/entity-resolution/override")
+async def override_mapping(
+    request: OverrideMappingRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Manually override/correct a low-confidence entity mapping (score < 0.85).
+    
+    This endpoint allows manual correction of mappings by:
+    - Updating the mapping with corrected names
+    - Marking as manually_verified=True
+    - Setting confidence_score to 1.0
+    - Validating to prevent duplicate mappings
+    
+    Use this for low-confidence matches that need manual review and correction.
+    """
+    try:
+        mapping = entity_resolution.override_mapping(
+            db=db,
+            fpl_id=request.fpl_id,
+            understat_name=request.understat_name,
+            fbref_name=request.fbref_name,
+            fpl_name=request.fpl_name,
+            canonical_name=request.canonical_name
+        )
+        
+        return {
+            'status': 'success',
+            'message': f'Mapping overridden for FPL ID {request.fpl_id}',
+            'mapping': {
+                'fpl_id': mapping.fpl_id,
+                'canonical_name': mapping.canonical_name,
+                'understat_name': mapping.understat_name,
+                'fbref_name': mapping.fbref_name,
+                'confidence_score': float(mapping.confidence_score) if mapping.confidence_score else None,
+                'manually_verified': mapping.manually_verified,
+                'updated_at': mapping.updated_at.isoformat() if mapping.updated_at else None
+            }
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except IntegrityError as e:
+        raise HTTPException(status_code=409, detail=f"Database constraint violation: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error overriding mapping: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/entity-resolution/fuzzy-match")
 async def fuzzy_match_player(
     player_name: str,
@@ -2016,6 +2739,48 @@ async def fuzzy_match_player(
         }
         
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/entity-resolution/resolve-all", response_model=BulkResolutionReport)
+async def resolve_all_players(
+    store_mappings: bool = True,
+    db: Session = Depends(get_db)
+):
+    """
+    Resolve all FPL players and store mappings in database.
+    Generates a comprehensive report of match accuracy, low-confidence matches, and unmatched players.
+    
+    This endpoint:
+    - Fetches all FPL players from bootstrap data
+    - Resolves entity mappings for each player
+    - Stores mappings in database (if store_mappings=True)
+    - Returns detailed report with statistics
+    
+    Use this for bulk processing and generating reports for manual review.
+    """
+    try:
+        # Load master map if not already loaded
+        if entity_resolution.master_map is None:
+            await entity_resolution.load_master_map()
+        
+        # Fetch all FPL players from bootstrap
+        bootstrap = await fpl_api.get_bootstrap_data()
+        fpl_players = fpl_api.extract_players_from_bootstrap(bootstrap)
+        
+        logger.info(f"Resolving {len(fpl_players)} FPL players...")
+        
+        # Resolve all players and generate report
+        report = entity_resolution.resolve_all_players(
+            db=db,
+            fpl_players=fpl_players,
+            store_mappings=store_mappings
+        )
+        
+        return BulkResolutionReport(**report)
+        
+    except Exception as e:
+        logger.error(f"Error in bulk resolution: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

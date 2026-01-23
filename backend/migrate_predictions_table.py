@@ -89,10 +89,11 @@ def migrate_predictions_table():
                     """))
             
             # Populate fpl_id from player_id if fpl_id is NULL
+            # Note: players.id is the FPL player ID (primary key)
             conn.execute(text("""
                 UPDATE predictions p
                 SET fpl_id = (
-                    SELECT pl.fpl_id 
+                    SELECT pl.id 
                     FROM players pl 
                     WHERE pl.id = p.player_id
                 )

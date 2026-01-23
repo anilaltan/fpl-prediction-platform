@@ -3,42 +3,179 @@
 ## Project Overview
 This is a professional SaaS platform for Fantasy Premier League (FPL) point prediction using Machine Learning. The project follows "Moneyball" principles for data-driven decision making and implements "DefCon" rules for robust error handling and rate limiting.
 
+**Critical Constraint**: Production environment is limited to **2 vCPU and 4 GB RAM**. Memory optimization is priority #1.
+
+---
+
 ## Architecture
 
 ### Monorepo Structure
 - `/backend` - FastAPI Python application for ML and API services
 - `/frontend` - Next.js application with App Router and Tailwind CSS
+- `/docs` - All project documentation (organized by category)
 - Root directory contains Docker Compose and shared configuration
 
 ### Technology Stack
-- **Backend**: FastAPI (Python 3.11-slim), SQLAlchemy, PostgreSQL
+- **Backend**: FastAPI (Python 3.11-slim), SQLAlchemy, PostgreSQL (TimescaleDB)
 - **Frontend**: Next.js 14 (App Router), React, TypeScript, Tailwind CSS
-- **Database**: PostgreSQL 15
-- **Orchestration**: Docker Compose with memory limits
+- **Database**: PostgreSQL 15 with TimescaleDB extension
+- **ML Libraries**: XGBoost, LightGBM, Random Forest, Poisson Regression
+- **Orchestration**: Docker Compose with memory limits (DB: 512MB, Frontend: 1GB)
 
-### Key Principles
+### Modular Service Architecture
 
-#### Moneyball Principles
+#### FPL API Service (`app/services/fpl/`)
+**Modular structure** (refactored from monolithic `fpl_api.py`):
+- `client.py` - `FPLHTTPClient` with `RateLimiter` (DefCon: 60 req/min, exponential backoff)
+- `cache.py` - `InMemoryCache` with TTL support (24h bootstrap, 1h player data)
+- `processors.py` - `FPLDataProcessor` for data transformation and extraction
+- `repository.py` - `FPLRepository` implementing Repository Pattern for DB operations
+- `service.py` - `FPLAPIService` orchestrator using all modular components
+- `fpl_api.py` - Compatibility wrapper (imports from `app.services.fpl`)
+
+**Key Methods**:
+- `get_bootstrap_data()` - Fetches and caches bootstrap-static data
+- `get_player_data()` - Fetches player summary with history
+- `fetch_comprehensive_player_data()` - Orchestrates FPL + FBref data fetching
+- `bulk_save_gameweek_stats()` - Batch processing with periodic `gc.collect()`
+
+#### ML Engine (`app/services/ml/`)
+**Modular structure** (refactored from monolithic `ml_engine.py`):
+- `interfaces.py` - `ModelInterface` abstract base class for all ML models
+- `strategies/xmins_strategy.py` - `XMinsStrategy` (XGBoost/RandomForest for starting probability)
+- `strategies/attack_strategy.py` - `AttackStrategy` (LightGBM for xG/xA with opponent xGC normalization)
+- `strategies/defense_strategy.py` - `DefenseStrategy` (LightGBM/Poisson for clean sheet probability)
+- `model_loader.py` - `ModelLoader` for lazy loading/unloading with `gc.collect()`
+- `engine.py` - `PLEngine` orchestrator using all strategies
+- `ml_engine.py` - Compatibility wrapper (imports from `app.services.ml`)
+
+**Key Features**:
+- Lazy loading: Models loaded only during inference
+- Immediate unloading: `gc.collect()` called after each prediction
+- Memory efficient: Only one model in memory at a time
+- Strategy pattern: Each model type is a separate strategy class
+
+**xP Calculation Formula**:
+```
+xP = (xMins/90) * [(Goal_Points * xG) + (Assist_Points * xA) + (CS_Points * xCS) + DefCon_Points] + Appearance_Points + Expected_Bonus
+```
+
+#### Other Core Services
+- `etl_service.py` - Async ETL operations with `AsyncSession` for PostgreSQL UPSERT
+- `feature_engineering.py` - Feature engineering with `DynamicFormAlpha` and `DixonColesFDR`
+- `component_feature_engineering.py` - Component-based feature preparation for ML models
+- `team_solver.py` - Multi-period ILP solver for team optimization
+- `market_intelligence.py` - Ownership arbitrage and player ranking
+- `risk_management.py` - Risk analysis, captain selection, chip timing
+- `backtest.py` / `backtesting.py` - Backtesting engines for model validation
+- `entity_resolution.py` - Entity mapping between FPL, Understat, FBref
+- `data_cleaning.py` - Data normalization and DefCon metrics calculation
+- `third_party_data.py` - Understat and FBref data scraping
+
+#### Utilities
+- `app/utils/dataframe_optimizer.py` - DataFrame type optimization (int64->int16/int32, float64->float32, object->category)
+
+#### Error Handling
+- `app/exceptions.py` - Centralized exception system:
+  - `AppException` - Base exception class
+  - `ValidationError`, `NotFoundError`, `DatabaseError`, `ExternalAPIError`, `ModelError`, `RateLimitError`
+  - Standardized error response format with `error_code`, `message`, `status_code`, `details`
+- Exception handlers registered in `main.py` for consistent error responses
+
+---
+
+## Key Principles
+
+### Moneyball Principles
 - Statistical analysis over intuition
 - Identify undervalued players through data
 - Optimize team selection based on expected value
 - Focus on predictive metrics rather than past performance alone
 
-#### DefCon Rules
-- Implement rate limiting for external API calls
-- Graceful error handling and fallback mechanisms
+### DefCon Rules
+- Rate limiting: 60 requests/minute for FPL API
+- Exponential backoff on errors
+- Graceful error handling with fallback mechanisms
 - Health checks and monitoring
-- Resource constraints awareness (memory limits enforced)
+- Resource constraints awareness (4GB RAM limit enforced)
+
+### Memory Optimization (4GB RAM Constraint)
+- **DataFrame Types**: Always use `optimize_dataframe_types()` from `app.utils.dataframe_optimizer`
+  - `int64` -> `int16/int32/int8` based on value ranges
+  - `float64` -> `float32` (50% memory reduction)
+  - `object` -> `category` for repeated strings (team names, positions)
+- **ML Models**: Lazy loading via `ModelLoader`, unload immediately with `gc.collect()`
+- **Batch Processing**: Use periodic `gc.collect()` every 50-100 items in loops
+- **Generators**: Prefer generators over list comprehensions for large data processing
+- **Async I/O**: All database and external API operations must be `async`
+
+---
 
 ## Development Guidelines
 
 ### Backend
-- Use type hints throughout Python code
-- Follow FastAPI best practices for route definitions
-- Implement proper error handling with HTTP status codes
-- Use SQLAlchemy ORM for database operations
-- ML models should be versioned and stored separately
-- Services should be modular and testable
+
+#### Code Organization
+- **No file > 500 lines**: Split into modular sub-components
+- **Repository Pattern**: Use `FPLRepository` for DB operations, not direct SQLAlchemy in services
+- **Strategy Pattern**: ML models implement `ModelInterface` and are loaded via `ModelLoader`
+- **Separation of Concerns**: HTTP client, cache, processors, and repository are separate modules
+
+#### Type Hints
+- **Required**: All function signatures must have type hints
+- Use `typing.List[T]`, `typing.Optional[T]`, `typing.Dict[K, V]`, `typing.Tuple[T, ...]`
+- Pydantic models for request/response schemas
+- Return types must be explicit
+
+#### Docstrings
+- **Required**: Google-style docstrings for all public methods
+- Include: Args, Returns, Raises sections
+- Document complex algorithms and business logic
+
+#### Error Handling
+- **Always use**: `app.exceptions` classes instead of generic `Exception` or `HTTPException`
+- Examples:
+  ```python
+  from app.exceptions import NotFoundError, ValidationError, ExternalAPIError
+  
+  if not player:
+      raise NotFoundError(resource="Player", identifier=str(player_id))
+  
+  if not request.gameweek:
+      raise ValidationError("gameweek is required", details={"field": "gameweek"})
+  ```
+
+#### Memory Management
+- **DataFrames**: Always optimize types before processing large datasets
+  ```python
+  from app.utils.dataframe_optimizer import optimize_dataframe_types
+  df = optimize_dataframe_types(df, int_columns=['fpl_id', 'gameweek'], category_columns=['position'])
+  ```
+- **ML Models**: Load via `ModelLoader`, unload immediately after use
+  ```python
+  await model_loader.load_model(xmins_strategy, model_path)
+  # ... use model ...
+  await model_loader.unload_model(xmins_strategy)
+  ```
+- **Batch Operations**: Add periodic garbage collection
+  ```python
+  for i, item in enumerate(items):
+      # ... process item ...
+      if i % 50 == 0:
+          gc.collect()
+  ```
+
+#### FastAPI Best Practices
+- All endpoints must be `async`
+- Use Pydantic models for request/response validation
+- Use dependency injection (`Depends(get_db)`) for database sessions
+- Register exception handlers in `main.py`
+
+#### Database
+- Use `AsyncSession` for all database operations (via `ETLService` or `FPLRepository`)
+- Use UPSERT operations for idempotent data loading
+- Index frequently queried columns (gameweek, season, player_id)
+- Use TimescaleDB hypertables for time-series data
 
 ### Frontend
 - Use TypeScript for type safety
@@ -46,34 +183,139 @@ This is a professional SaaS platform for Fantasy Premier League (FPL) point pred
 - Implement responsive design with Tailwind CSS
 - Use server components where possible for performance
 - Client components only when interactivity is needed
-
-### Database
-- Use migrations (Alembic) for schema changes
-- Index frequently queried columns
-- Implement soft deletes where appropriate
-- Track model performance metrics
+- Use SWR for data fetching with proper error handling
 
 ### Docker
 - Keep images small (use slim/alpine variants)
-- Respect memory limits (DB: 512MB, Frontend: 1GB)
+- Respect memory limits (DB: 512MB, Frontend: 1GB, Backend: ~2GB)
 - Use health checks for service dependencies
 - Mount volumes for development hot-reload
 
+---
+
 ## Environment Variables
-- `DATABASE_URL` - PostgreSQL connection string
-- `FPL_EMAIL` - FPL API credentials
-- `FPL_PASSWORD` - FPL API credentials
+- `DATABASE_URL` - PostgreSQL connection string (async: `postgresql+asyncpg://`)
+- `FPL_EMAIL` - FPL API credentials (optional, for authenticated requests)
+- `FPL_PASSWORD` - FPL API credentials (optional)
 - `SECRET_KEY` - Application secret key
 
+---
+
 ## Code Style
-- Python: Follow PEP 8, use Black formatter
-- TypeScript: Follow ESLint rules, use Prettier
+
+### Python
+- Follow PEP 8
+- Use Black formatter (if configured)
+- **Type hints required** on all function signatures
+- **Google-style docstrings required** for all public methods
 - Use meaningful variable and function names
-- Add docstrings to public functions and classes
 - Comment complex logic and algorithms
+
+### TypeScript
+- Follow ESLint rules
+- Use Prettier for formatting
+- Strict type checking enabled
+- Prefer interfaces over types for object shapes
+
+---
+
+## Import Patterns
+
+### FPL API Service
+```python
+# New modular structure (preferred)
+from app.services.fpl import FPLAPIService
+
+# Legacy compatibility (still works)
+from app.services.fpl_api import FPLAPIService
+```
+
+### ML Engine
+```python
+# New modular structure (preferred)
+from app.services.ml import PLEngine, XMinsStrategy, AttackStrategy, DefenseStrategy
+
+# Legacy compatibility (still works)
+from app.services.ml_engine import PLEngine, XMinsModel, AttackModel, DefenseModel
+```
+
+### Error Handling
+```python
+from app.exceptions import (
+    AppException,
+    ValidationError,
+    NotFoundError,
+    DatabaseError,
+    ExternalAPIError,
+    ModelError,
+    RateLimitError
+)
+```
+
+### Utilities
+```python
+from app.utils.dataframe_optimizer import optimize_dataframe_types, optimize_numeric_columns
+```
+
+---
+
+## Docker & Execution Rules
+
+### CRITICAL: Always Use Docker
+- **NEVER** run Python scripts or migrations on the host machine
+- The system runs inside Docker containers
+- All dependencies are installed in Docker, not on host
+
+### Command Execution
+- **Python scripts**: `docker compose exec backend python3 <script.py>`
+- **Migrations**: `docker compose exec backend alembic upgrade head`
+- **Testing**: `docker compose exec backend pytest`
+- **Interactive shell**: `docker compose exec backend python3`
+- **Database access**: `docker compose exec db psql -U fpl_user -d fpl_db`
+
+### ALWAYS use `python3` not `python`
+- The Docker image uses `python3` command
+- Using `python` will fail
+
+---
+
+## File Size Guidelines
+- **Target**: No file > 500 lines
+- **Current Status**: All major services have been modularized
+- **If a file exceeds 500 lines**: Split into sub-modules following existing patterns
+
+---
+
+## Memory Optimization Checklist
+
+When working with large datasets or ML models:
+
+- [ ] Use `optimize_dataframe_types()` on DataFrames before processing
+- [ ] Load ML models via `ModelLoader` (lazy loading)
+- [ ] Unload models immediately after use with `gc.collect()`
+- [ ] Use generators instead of list comprehensions for large loops
+- [ ] Add periodic `gc.collect()` in batch processing loops
+- [ ] Ensure all I/O operations are `async`
+- [ ] Use `float32` instead of `float64` where precision allows
+- [ ] Use `int16/int32` instead of `int64` where value ranges allow
+- [ ] Convert string columns to `category` type for repeated values
+
+---
 
 ## Testing
 - Write unit tests for ML models
 - Test API endpoints with proper fixtures
-- Test error handling scenarios
+- Test error handling scenarios (use `AppException` classes)
 - Use integration tests for critical workflows
+- **Note**: Test files should be in a separate `tests/` directory (not in production code)
+
+---
+
+## Documentation
+- All documentation is in `/docs` directory, organized by category:
+  - `docs/refactoring/` - Refactoring task summaries
+  - `docs/backend/` - Backend-specific documentation
+  - `docs/frontend/` - Frontend component documentation
+  - `docs/cleanup/` - Cleanup summaries
+- See `docs/README.md` for complete documentation index
+- `ARCHITECTURE_MAP.md` at root for system architecture reference

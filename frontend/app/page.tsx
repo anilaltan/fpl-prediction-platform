@@ -64,7 +64,7 @@ export default function DashboardPage() {
             id: nextGW.id,
             name: nextGW.name,
             deadline_time: nextGW.deadline_time,
-            is_next: true
+            is_next: true,
           })
           
           // Fetch fixtures for next gameweek
@@ -100,18 +100,18 @@ export default function DashboardPage() {
   // Surprise player: High xP but low ownership (relaxed filter)
   const surprisePlayer = players.length > 0
     ? [...players]
-        .filter(p => p.ownership_percent < 15 && p.expected_points > 3)
-        .sort((a, b) => {
-          // Sort by xP/ownership ratio (higher is better)
-          const ratioA = a.expected_points / Math.max(a.ownership_percent, 0.1)
-          const ratioB = b.expected_points / Math.max(b.ownership_percent, 0.1)
-          return ratioB - ratioA
-        })[0] || null
+      .filter(p => p.ownership_percent < 15 && p.expected_points > 3)
+      .sort((a, b) => {
+        // Sort by xP/ownership ratio (higher is better)
+        const ratioA = a.expected_points / Math.max(a.ownership_percent, 0.1)
+        const ratioB = b.expected_points / Math.max(b.ownership_percent, 0.1)
+        return ratioB - ratioA
+      })[0] || null
     : null
 
   const getDifficultyColor = (difficulty: number) => {
-    if (difficulty <= 2) return 'text-fpl-green-500 bg-fpl-green-500/20'
-    if (difficulty === 3) return 'text-yellow-500 bg-yellow-500/20'
+    if (difficulty <= 2) {return 'text-fpl-green-500 bg-fpl-green-500/20'}
+    if (difficulty === 3) {return 'text-yellow-500 bg-yellow-500/20'}
     return 'text-red-500 bg-red-500/20'
   }
 
@@ -122,7 +122,7 @@ export default function DashboardPage() {
         day: 'numeric',
         month: 'short',
         hour: '2-digit',
-        minute: '2-digit'
+        minute: '2-digit',
       })
     } catch {
       return deadlineTime
@@ -133,7 +133,7 @@ export default function DashboardPage() {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-fpl-green-500 mx-auto"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-fpl-green-500 mx-auto" />
           <p className="mt-4 text-gray-400">Loading dashboard...</p>
         </div>
       </div>
@@ -262,7 +262,7 @@ export default function DashboardPage() {
                         day: 'numeric',
                         month: 'short',
                         hour: '2-digit',
-                        minute: '2-digit'
+                        minute: '2-digit',
                       })}
                     </div>
                   )}

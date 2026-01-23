@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   db:
-    image: postgres:15-alpine
+    image: timescale/timescaledb:latest-pg15
     container_name: fpl_db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-fpl_user}
@@ -10,12 +10,14 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-fpl_db}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./backend/scripts/init_timescaledb.sql:/docker-entrypoint-initdb.d/01-init-timescaledb.sql
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fpl_user}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fpl_user} -d ${POSTGRES_DB:-fpl_db}"]
       interval: 10s
       timeout: 5s
+      start_period: 30s
       retries: 5
     mem_limit: 512m
     mem_reservation: 256m
@@ -23,7 +25,7 @@ services:
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     container_name: fpl_backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
@@ -48,16 +50,23 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     container_name: fpl_frontend
+    command: npm run dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
     ports:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - BACKEND_URL=http://backend:8000
     depends_on:
       - backend
     mem_limit: 1g
     mem_reservation: 512m
+    user: root
 
 volumes:
   postgres_data:

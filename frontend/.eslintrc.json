@@ -1,0 +1,261 @@
+{
+  "extends": [
+    "next/core-web-vitals",
+    "plugin:@typescript-eslint/recommended",
+    "plugin:react/recommended",
+    "plugin:react-hooks/recommended"
+  ],
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "module",
+    "ecmaFeatures": {
+      "jsx": true
+    }
+  },
+  "plugins": [
+    "@typescript-eslint",
+    "react",
+    "react-hooks"
+  ],
+  "rules": {
+    // =============================================================================
+    // TypeScript Rules
+    // =============================================================================
+    "@typescript-eslint/no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_"
+      }
+    ],
+    "@typescript-eslint/explicit-function-return-type": "off",
+    "@typescript-eslint/explicit-module-boundary-types": "off",
+    "@typescript-eslint/no-explicit-any": "warn",
+    "@typescript-eslint/no-non-null-assertion": "warn",
+    "@typescript-eslint/no-var-requires": "error",
+    "@typescript-eslint/no-empty-function": "warn",
+
+    // =============================================================================
+    // Modern ES6+ Rules
+    // =============================================================================
+    "prefer-const": "error",
+    "no-var": "error",
+    "prefer-arrow-callback": "error",
+    "prefer-template": "error",
+    "prefer-destructuring": [
+      "warn",
+      {
+        "array": false,
+        "object": true
+      }
+    ],
+    "prefer-spread": "error",
+    "prefer-rest-params": "error",
+    "no-console": [
+      "warn",
+      {
+        "allow": ["warn", "error"]
+      }
+    ],
+    "no-debugger": "error",
+    "no-alert": "error",
+    "no-eval": "error",
+    "no-implied-eval": "error",
+    "no-new-func": "error",
+
+    // =============================================================================
+    // React Rules
+    // =============================================================================
+    "react/react-in-jsx-scope": "off",
+    "react/prop-types": "off",
+    "react/display-name": "off",
+    "react/jsx-uses-react": "off",
+    "react/jsx-uses-vars": "error",
+    "react/jsx-key": [
+      "error",
+      {
+        "checkFragmentShorthand": true,
+        "warnOnDuplicates": true
+      }
+    ],
+    "react/jsx-no-duplicate-props": "error",
+    "react/jsx-no-undef": "error",
+    "react/jsx-pascal-case": "error",
+    "react/no-array-index-key": "warn",
+    "react/no-danger": "warn",
+    "react/no-deprecated": "warn",
+    "react/no-direct-mutation-state": "error",
+    "react/no-unescaped-entities": "warn",
+    "react/self-closing-comp": [
+      "error",
+      {
+        "component": true,
+        "html": true
+      }
+    ],
+    "react/jsx-boolean-value": ["error", "never"],
+    "react/jsx-curly-brace-presence": [
+      "error",
+      {
+        "props": "never",
+        "children": "never"
+      }
+    ],
+    "react/jsx-fragments": ["error", "syntax"],
+    "react/jsx-no-useless-fragment": "error",
+    "react/jsx-props-no-spreading": "off",
+
+    // =============================================================================
+    // React Hooks Rules
+    // =============================================================================
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "warn",
+
+    // =============================================================================
+    // Code Quality Rules
+    // =============================================================================
+    "eqeqeq": ["error", "always", { "null": "ignore" }],
+    "curly": ["error", "all"],
+    "no-else-return": "warn",
+    "no-lonely-if": "warn",
+    "no-nested-ternary": "warn",
+    "no-unneeded-ternary": "warn",
+    "prefer-object-spread": "error",
+    "object-shorthand": ["error", "always"],
+    "no-useless-return": "error",
+    "no-useless-concat": "error",
+    "no-useless-rename": "error",
+    "no-duplicate-imports": "error",
+    "no-unused-expressions": [
+      "error",
+      {
+        "allowShortCircuit": true,
+        "allowTernary": true
+      }
+    ],
+
+    // =============================================================================
+    // Import/Export Rules
+    // =============================================================================
+    "import/order": "off",
+    "import/no-duplicates": "error",
+    "import/no-unresolved": "off",
+
+    // =============================================================================
+    // Next.js Specific Rules
+    // =============================================================================
+    "@next/next/no-html-link-for-pages": "error",
+    "@next/next/no-img-element": "warn",
+    "@next/next/no-sync-scripts": "error",
+    "@next/next/no-unwanted-polyfillio": "error",
+
+    // =============================================================================
+    // Style & Formatting (handled by Prettier, but enforce consistency)
+    // =============================================================================
+    "comma-dangle": [
+      "error",
+      {
+        "arrays": "always-multiline",
+        "objects": "always-multiline",
+        "imports": "always-multiline",
+        "exports": "always-multiline",
+        "functions": "always-multiline"
+      }
+    ],
+    "quotes": [
+      "error",
+      "single",
+      {
+        "avoidEscape": true,
+        "allowTemplateLiterals": true
+      }
+    ],
+    "semi": ["error", "never"],
+    "indent": [
+      "error",
+      2,
+      {
+        "SwitchCase": 1,
+        "ignoredNodes": ["TemplateLiteral"]
+      }
+    ],
+    "max-len": [
+      "warn",
+      {
+        "code": 100,
+        "tabWidth": 2,
+        "ignoreUrls": true,
+        "ignoreStrings": true,
+        "ignoreTemplateLiterals": true,
+        "ignoreRegExpLiterals": true
+      }
+    ],
+    "max-lines": [
+      "warn",
+      {
+        "max": 500,
+        "skipBlankLines": true,
+        "skipComments": true
+      }
+    ],
+    "max-lines-per-function": [
+      "warn",
+      {
+        "max": 100,
+        "skipBlankLines": true,
+        "skipComments": true
+      }
+    ],
+
+    // =============================================================================
+    // Best Practices
+    // =============================================================================
+    "no-param-reassign": [
+      "error",
+      {
+        "props": true,
+        "ignorePropertyModificationsFor": ["state", "acc", "e", "ctx", "req", "res"]
+      }
+    ],
+    "no-return-assign": "error",
+    "no-sequences": "error",
+    "no-throw-literal": "error",
+    "prefer-promise-reject-errors": "error",
+    "radix": "error",
+    "yoda": "error"
+  },
+  "settings": {
+    "react": {
+      "version": "detect"
+    }
+  },
+  "overrides": [
+    {
+      "files": ["*.ts", "*.tsx"],
+      "rules": {
+        "@typescript-eslint/explicit-function-return-type": "off"
+      }
+    },
+    {
+      "files": ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx"],
+      "env": {
+        "jest": true
+      },
+      "rules": {
+        "@typescript-eslint/no-explicit-any": "off",
+        "no-console": "off"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    ".next",
+    "node_modules",
+    "out",
+    "dist",
+    "build",
+    "*.config.js",
+    "*.config.ts"
+  ]
+}

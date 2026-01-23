@@ -1,0 +1,44 @@
+# =============================================================================
+# Backend Development Dockerfile
+# Optimized for hot-reload and development workflow
+# =============================================================================
+
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    postgresql-client \
+    coinor-cbc \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+WORKDIR /app
+
+# Copy requirements and install dependencies
+# Use --no-cache-dir and clean pip cache to minimize disk usage
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip cache purge && \
+    rm -rf /root/.cache/pip && \
+    find /usr/local/lib/python3.11 -type d -name __pycache__ -exec rm -r {} + 2>/dev/null || true && \
+    find /usr/local/lib/python3.11 -name "*.pyc" -delete && \
+    find /usr/local/lib/python3.11 -name "*.pyo" -delete
+
+# Copy application code (will be overridden by volume mount in docker-compose)
+COPY . .
+
+# Development environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONHASHSEED=random \
+    TF_CPP_MIN_LOG_LEVEL=2 \
+    TF_ENABLE_ONEDNN_OPTS=0
+
+# Expose port
+EXPOSE 8000
+
+# Default command (can be overridden in docker-compose)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

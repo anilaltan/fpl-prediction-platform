@@ -1,0 +1,40 @@
+# =============================================================================
+# Frontend Development Dockerfile
+# Optimized for hot-reload and development workflow
+# =============================================================================
+
+FROM node:18-alpine
+
+# Install curl for health checks
+RUN apk add --no-cache curl
+
+WORKDIR /app
+
+# Copy package files first for better layer caching
+COPY package*.json ./
+
+# Install dependencies
+# Use npm install if package-lock.json doesn't exist, otherwise use npm ci
+# --legacy-peer-deps: Resolves peer dependency conflicts
+RUN if [ -f package-lock.json ]; then \
+        npm ci --legacy-peer-deps; \
+    else \
+        npm install --legacy-peer-deps && npm cache clean --force; \
+    fi
+
+# Copy application code (will be overridden by volume mount in docker-compose)
+COPY . .
+
+# Development environment variables
+ENV NODE_ENV=development \
+    NEXT_TELEMETRY_DISABLED=1
+
+# Expose port
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:3000 || exit 1
+
+# Default command (can be overridden in docker-compose)
+CMD ["npm", "run", "dev"]

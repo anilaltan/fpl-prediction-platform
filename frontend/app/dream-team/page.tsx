@@ -57,7 +57,7 @@ export default function DreamTeamPage() {
       GK: [],
       DEF: [],
       MID: [],
-      FWD: []
+      FWD: [],
     }
 
     players.forEach(player => {
@@ -73,7 +73,7 @@ export default function DreamTeamPage() {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-fpl-green-500 mx-auto"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-fpl-green-500 mx-auto" />
           <p className="mt-4 text-gray-400">Loading dream team...</p>
         </div>
       </div>
@@ -234,7 +234,7 @@ function PlayerCard({
     if (parts.length > 1) {
       return `${parts[0]} ${parts[parts.length - 1][0]}.`
     }
-    return name.length > 12 ? name.substring(0, 10) + '..' : name
+    return name.length > 12 ? `${name.substring(0, 10)  }..` : name
   }
 
   // Get team icon/initial
