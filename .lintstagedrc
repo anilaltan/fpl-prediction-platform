@@ -7,6 +7,5 @@
     "docker exec -t fpl_backend ruff check --fix",
     "docker exec -t fpl_backend ruff format",
     "docker exec -t fpl_backend mypy"
-  ],
-  * text=auto eol=lf
+  ]
 }
