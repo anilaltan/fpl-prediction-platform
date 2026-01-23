@@ -24,7 +24,7 @@ services:
     restart: unless-stopped
 
   backend:
-    image: ${GHCR_BACKEND_IMAGE:-ghcr.io/your-org/fpl-prediction-platform/backend:latest}
+    image: ${GHCR_BACKEND_IMAGE:-ghcr.io/anilaltan/fpl-prediction-platform/backend:latest}
     container_name: fpl_backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
     ports:
@@ -46,7 +46,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: ${GHCR_FRONTEND_IMAGE:-ghcr.io/your-org/fpl-prediction-platform/frontend:latest}
+    image: ${GHCR_FRONTEND_IMAGE:-ghcr.io/anilaltan/fpl-prediction-platform/frontend:latest}
     container_name: fpl_frontend
     ports:
       - "3000:3000"

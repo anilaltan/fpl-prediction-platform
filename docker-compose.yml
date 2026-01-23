@@ -1,6 +1,19 @@
-version: '3.8'
+# =============================================================================
+# Docker Compose for LOCAL DEVELOPMENT
+# =============================================================================
+# This configuration is optimized for local development with hot reloading.
+# For production, use docker-compose.prod.yml
+#
+# Usage:
+#   docker compose up
+#   docker compose up -d  # Run in background
+#   docker compose down    # Stop and remove containers
+# =============================================================================
 
 services:
+  # ===========================================================================
+  # Database Service - TimescaleDB (PostgreSQL extension)
+  # ===========================================================================
   db:
     image: timescale/timescaledb:latest-pg15
     container_name: fpl_db
@@ -9,9 +22,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fpl_password}
       POSTGRES_DB: ${POSTGRES_DB:-fpl_db}
     volumes:
+      # Persist database data
       - postgres_data:/var/lib/postgresql/data
+      # Initialize TimescaleDB on first run
       - ./backend/scripts/init_timescaledb.sql:/docker-entrypoint-initdb.d/01-init-timescaledb.sql
     ports:
+      # Expose port 5432 to localhost for DBeaver/other DB clients
       - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fpl_user} -d ${POSTGRES_DB:-fpl_db}"]
@@ -19,24 +35,31 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 5
-    mem_limit: 512m
-    mem_reservation: 256m
 
+  # ===========================================================================
+  # Backend Service - FastAPI with Hot Reload
+  # ===========================================================================
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile.dev
     container_name: fpl_backend
+    # Hot reload enabled: changes to Python files trigger automatic restart
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
+      # Mount local backend directory for hot reloading
       - ./backend:/app
     ports:
+      # Expose port 8000 to localhost
       - "8000:8000"
     environment:
+      # Database connection (uses 'db' service name for internal Docker network)
       - DATABASE_URL=postgresql://${POSTGRES_USER:-fpl_user}:${POSTGRES_PASSWORD:-fpl_password}@db:5432/${POSTGRES_DB:-fpl_db}
-      - FPL_EMAIL=${FPL_EMAIL}
-      - FPL_PASSWORD=${FPL_PASSWORD}
-      - SECRET_KEY=${SECRET_KEY}
+      # FPL API credentials (optional)
+      - FPL_EMAIL=${FPL_EMAIL:-}
+      - FPL_PASSWORD=${FPL_PASSWORD:-}
+      # Application secret key
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
       # Reduce TensorFlow/CUDA log noise
       - TF_CPP_MIN_LOG_LEVEL=2
       - TF_ENABLE_ONEDNN_OPTS=0
@@ -44,29 +67,38 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    mem_limit: 1536m
-    mem_reservation: 768m
 
+  # ===========================================================================
+  # Frontend Service - Next.js with Hot Reload
+  # ===========================================================================
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
     container_name: fpl_frontend
+    # Next.js dev server with hot module replacement
     command: npm run dev
     volumes:
+      # Mount local frontend directory for hot reloading
       - ./frontend:/app
+      # Prevent node_modules from being overwritten by local directory
       - /app/node_modules
+      # Cache .next build directory for faster rebuilds
       - /app/.next
     ports:
+      # Expose port 3000 to localhost
       - "3000:3000"
     environment:
+      # Backend API URL for client-side requests (browser)
       - NEXT_PUBLIC_API_URL=http://localhost:8000
+      # Backend URL for server-side API routes (Next.js API routes)
       - BACKEND_URL=http://backend:8000
     depends_on:
       - backend
-    mem_limit: 1g
-    mem_reservation: 512m
-    user: root
 
+# =============================================================================
+# Named Volumes
+# =============================================================================
 volumes:
+  # Persistent database storage
   postgres_data:
