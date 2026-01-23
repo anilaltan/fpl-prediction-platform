@@ -5,6 +5,7 @@ Implements:
 - C/VC Paradox: Advanced captain selection
 - Chip Timing: Optimal chip usage triggers
 """
+
 import numpy as np
 from typing import Dict, List, Optional
 import logging
@@ -608,13 +609,13 @@ class ChipTiming:
                 key=lambda x: x[1].get("expected_gain", 0.0), reverse=True
             )
             best_chip = playable_chips[0]
-            analysis[
-                "recommendation"
-            ] = f"Play {best_chip[0].replace('_', ' ').title()}: {best_chip[1]['recommendation']}"
+            analysis["recommendation"] = (
+                f"Play {best_chip[0].replace('_', ' ').title()}: {best_chip[1]['recommendation']}"
+            )
         else:
-            analysis[
-                "recommendation"
-            ] = "No chips recommended at this time. Save for better opportunities."
+            analysis["recommendation"] = (
+                "No chips recommended at this time. Save for better opportunities."
+            )
 
         return analysis
 

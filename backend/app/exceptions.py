@@ -2,6 +2,7 @@
 Centralized Exception Handling for FPL Prediction Platform
 Provides standardized error responses across the API.
 """
+
 from typing import Optional, Dict, Any
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse

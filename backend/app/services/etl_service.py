@@ -2,6 +2,7 @@
 ETL Service for Loading Data to PostgreSQL
 Handles async UPSERT operations for players and player_gameweek_stats tables
 """
+
 from typing import Dict, List, Optional, Union
 import logging
 from datetime import datetime

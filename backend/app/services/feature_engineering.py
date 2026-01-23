@@ -5,6 +5,7 @@ Implements self-adaptive feature engineering based on Moneyball principles:
 - Dynamic FDR (Dixon-Coles Poisson Regression)
 - DefCon Integration for 2025/26 rules
 """
+
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple

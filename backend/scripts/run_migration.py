@@ -6,6 +6,7 @@ Usage:
     python backend/scripts/run_migration.py [migration_file]
     python backend/scripts/run_migration.py  # Runs all pending migrations
 """
+
 import sys
 import os
 import logging

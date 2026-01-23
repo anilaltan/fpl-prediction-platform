@@ -2,6 +2,7 @@
 FPL Repository Pattern
 Database operations for FPL data using Repository Pattern.
 """
+
 from typing import Dict, List, Optional
 import logging
 

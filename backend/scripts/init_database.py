@@ -10,6 +10,7 @@ This script:
 Usage:
     python backend/scripts/init_database.py
 """
+
 import sys
 import os
 import logging

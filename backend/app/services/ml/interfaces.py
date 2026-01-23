@@ -2,6 +2,7 @@
 Model Interface
 Abstract interface for all ML models with lazy loading support.
 """
+
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, Any
 import logging

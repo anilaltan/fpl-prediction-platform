@@ -4,6 +4,7 @@ Integrates data from Understat and FBref for advanced metrics:
 - Understat: xG, xA, NPxG (Non-Penalty Expected Goals)
 - FBref: DefCon metrics (blocks, interventions, passes) for 2025/26 rules
 """
+
 import httpx
 import asyncio
 import re

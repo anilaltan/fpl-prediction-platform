@@ -2,6 +2,7 @@
 Migration script to update Prediction table schema for Batch Prediction system.
 Adds new columns and renames existing ones.
 """
+
 from app.database import engine
 from sqlalchemy import text
 

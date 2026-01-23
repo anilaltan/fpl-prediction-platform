@@ -2,6 +2,7 @@
 XMins Strategy
 XGBoost-based model for predicting starting 11 probability and expected minutes.
 """
+
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime

@@ -6,6 +6,7 @@ Implements:
 - Chip Trigger: Wildcard usage recommendations based on 5-week point gain
 - Solver Integration: Add strategy notes to solver outputs
 """
+
 from typing import Dict, List, Optional
 import logging
 

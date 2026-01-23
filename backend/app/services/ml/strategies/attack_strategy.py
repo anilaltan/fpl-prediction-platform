@@ -2,6 +2,7 @@
 Attack Strategy
 LightGBM-based model for predicting xG and xA with opponent xGC normalization.
 """
+
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 import logging

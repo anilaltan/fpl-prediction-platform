@@ -2,6 +2,7 @@
 FPL HTTP Client with Rate Limiting
 Handles HTTP requests to FPL API with DefCon rate limiting and exponential backoff.
 """
+
 import httpx
 import asyncio
 import time

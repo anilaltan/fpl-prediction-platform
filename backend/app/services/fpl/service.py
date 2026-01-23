@@ -2,6 +2,7 @@
 FPL API Service
 Main orchestrator for FPL API integration using modular components.
 """
+
 import os
 import asyncio
 import re

@@ -8,6 +8,7 @@ Features:
 - Memory Management: 4GB RAM limit with gc.collect() and parquet storage
 - Reporting: Season-end summary with graphical metrics
 """
+
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
@@ -202,7 +203,7 @@ class BacktestEngine:
             for i, current_gw in enumerate(test_gameweeks):
                 logger.info("")
                 logger.info(
-                    f"Processing Gameweek {current_gw} ({i+1}/{len(test_gameweeks)})"
+                    f"Processing Gameweek {current_gw} ({i + 1}/{len(test_gameweeks)})"
                 )
                 logger.info("-" * 60)
 

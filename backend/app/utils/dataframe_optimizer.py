@@ -3,6 +3,7 @@ DataFrame Type Optimization Utility
 Optimizes Pandas DataFrame memory usage by converting to efficient dtypes.
 Critical for 4GB RAM constraint.
 """
+
 import pandas as pd
 import numpy as np
 from typing import List, Optional

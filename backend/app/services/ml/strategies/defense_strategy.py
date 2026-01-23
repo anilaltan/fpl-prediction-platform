@@ -2,6 +2,7 @@
 Defense Strategy
 LightGBM model for predicting clean sheet probability (P_CS) and DefCon points.
 """
+
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 import logging

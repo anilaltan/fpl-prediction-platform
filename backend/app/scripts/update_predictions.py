@@ -3,6 +3,7 @@ Batch Prediction Update Script
 Calculates ML predictions for all players and stores them in Prediction table.
 This script runs in background to pre-calculate predictions, making API responses ultra-fast.
 """
+
 import asyncio
 import logging
 from datetime import datetime

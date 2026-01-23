@@ -2,6 +2,7 @@
 FPL Data Processors
 Transform and normalize FPL API responses.
 """
+
 from typing import Dict, List, Optional
 import logging
 
