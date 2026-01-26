@@ -9,6 +9,7 @@ from .strategies.attack_strategy import AttackStrategy
 from .strategies.defense_strategy import DefenseStrategy
 from .model_loader import ModelLoader
 from .engine import PLEngine
+from .model_file_validator import ModelFileValidator, ModelValidationResult
 
 __all__ = [
     "ModelInterface",
@@ -17,4 +18,6 @@ __all__ = [
     "DefenseStrategy",
     "ModelLoader",
     "PLEngine",
+    "ModelFileValidator",
+    "ModelValidationResult",
 ]

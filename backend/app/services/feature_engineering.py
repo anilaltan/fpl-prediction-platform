@@ -17,6 +17,8 @@ from statsmodels.discrete.discrete_model import Poisson
 from sqlalchemy.orm import Session
 import logging
 
+from app.services.ml.calculations import calculate_form, calculate_trend
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +42,7 @@ class DynamicFormAlpha:
     ) -> float:
         """
         Calculate weighted form using exponential decay.
+        Delegates to pure calculation function.
 
         Args:
             historical_points: List of points from most recent to oldest
@@ -49,33 +52,7 @@ class DynamicFormAlpha:
         Returns:
             Weighted form score
         """
-        if not historical_points or len(historical_points) == 0:
-            return 0.0
-
-        # Take only recent weeks
-        recent_points = historical_points[:lookback_weeks]
-        n = len(recent_points)
-
-        if n == 0:
-            return 0.0
-
-        # IMPORTANT (Mathematical Logic Audit):
-        # `historical_points` is ordered most-recent -> oldest.
-        # We want recent weeks to have HIGHER weight and older weeks to decay.
-        #
-        # Using `alpha ** (n-1-i)` does the opposite (for alpha<1 it gives the MOST recent the SMALLEST weight).
-        #
-        # Correct decay for most-recent-first input:
-        #   w0 = 1 (most recent), w1 = alpha, w2 = alpha^2, ...
-        # where 0 < alpha < 1 means faster decay (more emphasis on recent).
-        weights = [alpha**i for i in range(n)]
-        total_weight = sum(weights)
-
-        if total_weight == 0:
-            return np.mean(recent_points)
-
-        weighted_sum = sum(p * w for p, w in zip(recent_points, weights))
-        return weighted_sum / total_weight
+        return calculate_form(historical_points, alpha, lookback_weeks)
 
     def _calculate_rmse(
         self, alpha: float, historical_data: pd.DataFrame, lookback_weeks: int = 5
@@ -1184,18 +1161,11 @@ class FeatureEngineeringService:
         return validated
 
     def _calculate_trend(self, historical_points: List[float], weeks: int = 3) -> float:
-        """Calculate form trend (positive = improving, negative = declining)"""
-        if len(historical_points) < weeks:
-            return 0.0
-
-        recent = np.mean(historical_points[:weeks])
-        previous = (
-            np.mean(historical_points[weeks : weeks * 2])
-            if len(historical_points) >= weeks * 2
-            else recent
-        )
-
-        return float(recent - previous)
+        """
+        Calculate form trend (positive = improving, negative = declining).
+        Delegates to pure calculation function.
+        """
+        return calculate_trend(historical_points, weeks)
 
     def optimize_form_alpha(
         self, historical_data: pd.DataFrame, lookback_weeks: int = 5, n_calls: int = 50

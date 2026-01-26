@@ -482,14 +482,34 @@ class BacktestEngine:
             ) = self._prepare_attack_features(training_data)
 
             # Train model
-            self.plengine.train(
-                training_data=training_data,
-                xmins_features=xmins_features,
-                xmins_labels=xmins_labels,
-                attack_features=attack_features,
-                attack_xg_labels=attack_xg_labels,
-                attack_xa_labels=attack_xa_labels,
+            logger.info(
+                f"Training data sizes - xMins: {len(xmins_features) if xmins_features is not None else 0} features, "
+                f"{len(xmins_labels) if xmins_labels is not None else 0} labels; "
+                f"Attack: {len(attack_features) if attack_features is not None else 0} features, "
+                f"{len(attack_xg_labels) if attack_xg_labels is not None else 0} xG labels, "
+                f"{len(attack_xa_labels) if attack_xa_labels is not None else 0} xA labels"
             )
+            
+            try:
+                self.plengine.train(
+                    training_data=training_data,
+                    xmins_features=xmins_features,
+                    xmins_labels=xmins_labels,
+                    attack_features=attack_features,
+                    attack_xg_labels=attack_xg_labels,
+                    attack_xa_labels=attack_xa_labels,
+                )
+                
+                # Verify training succeeded
+                if not self.plengine.xmins_strategy.is_trained:
+                    logger.error("xMins model training failed - is_trained is still False")
+                if not self.plengine.attack_strategy.xg_trained:
+                    logger.error("Attack model training failed - xg_trained is still False")
+                else:
+                    logger.info("Model training completed successfully")
+            except Exception as e:
+                logger.error(f"Error during model training for GW{current_gw}: {str(e)}", exc_info=True)
+                raise
 
             # 4. Calculate historical averages for each player from training data (CRITICAL FIX)
             # For GW prediction, we should NOT use the current week's stats (which would be unknown)
@@ -541,6 +561,12 @@ class BacktestEngine:
 
                 # Get prediction using historical data
                 try:
+                    # Verify models are trained before predicting
+                    if not self.plengine.xmins_strategy.is_trained:
+                        raise RuntimeError("xMins model not trained")
+                    if not self.plengine.attack_strategy.xg_trained:
+                        raise RuntimeError("Attack model not trained")
+                    
                     prediction = self.plengine.predict(
                         player_data=player_data, fixture_data=None
                     )
@@ -549,13 +575,33 @@ class BacktestEngine:
                     # Actual points come from current week's REAL data (for validation only)
                     actual_points.append(current_week_data.get("total_points", 0))
                 except Exception as e:
-                    logger.warning(f"Prediction error for player {fpl_id}: {str(e)}")
+                    logger.error(
+                        f"Prediction error for player {fpl_id} (GW{current_gw}): {str(e)}"
+                    )
+                    logger.debug(
+                        f"  Model status - xMins trained: {self.plengine.xmins_strategy.is_trained if self.plengine else 'N/A'}, "
+                        f"Attack trained: {self.plengine.attack_strategy.xg_trained if self.plengine else 'N/A'}"
+                    )
                     predictions.append(0.0)
                     actual_points.append(current_week_data.get("total_points", 0))
 
             # 5. Calculate metrics (on individual player predictions)
             rmse = np.sqrt(mean_squared_error(actual_points, predictions))
-            spearman_corr, _ = spearmanr(actual_points, predictions)
+            
+            # Handle NaN in Spearman correlation (occurs when all predictions are the same)
+            try:
+                spearman_corr, _ = spearmanr(actual_points, predictions)
+                if np.isnan(spearman_corr):
+                    # All predictions are the same (likely all 0.0) - correlation is undefined
+                    spearman_corr = 0.0
+                    if len(set(predictions)) == 1:
+                        logger.warning(
+                            f"GW{current_gw}: All predictions are identical ({predictions[0] if predictions else 'N/A'}), "
+                            f"Spearman correlation set to 0.0"
+                        )
+            except Exception as e:
+                logger.warning(f"Error calculating Spearman correlation for GW{current_gw}: {str(e)}")
+                spearman_corr = 0.0
 
             # CRITICAL FIX: Store individual predictions for aggregate metrics
             # This allows proper RMSE/R² calculation across all players and weeks
@@ -1351,13 +1397,25 @@ class BacktestEngine:
                 if isinstance(obj, (np.integer, np.int64)):
                     return int(obj)
                 elif isinstance(obj, (np.floating, np.float64)):
-                    return float(obj)
+                    # Handle NaN and Inf values
+                    f = float(obj)
+                    if np.isnan(f):
+                        return None  # JSON doesn't support NaN, use null
+                    elif np.isinf(f):
+                        return None  # JSON doesn't support Inf, use null
+                    return f
                 elif isinstance(obj, np.ndarray):
                     return obj.tolist()
                 elif isinstance(obj, dict):
                     return {k: convert_to_serializable(v) for k, v in obj.items()}
                 elif isinstance(obj, list):
                     return [convert_to_serializable(item) for item in obj]
+                elif isinstance(obj, float):
+                    # Handle Python float NaN/Inf
+                    if np.isnan(obj):
+                        return None
+                    elif np.isinf(obj):
+                        return None
                 return obj
 
             serializable_report = convert_to_serializable(report)
@@ -1377,7 +1435,7 @@ class BacktestEngine:
         self, report: Dict, model_version: str = "5.0.0"
     ) -> Optional[int]:
         """
-        Save backtest summary to database.
+        Save backtest summary and individual results to database.
 
         Args:
             report: Report dictionary from _generate_report
@@ -1387,11 +1445,62 @@ class BacktestEngine:
             ID of saved BacktestSummary record, or None if error
         """
         try:
-            from app.models import BacktestSummary
+            from app.models import BacktestSummary, BacktestResult
 
             db = SessionLocal()
             try:
                 overall_metrics = report.get("overall_metrics", {})
+                methodology = report.get("methodology", "expanding_window")
+                season = report.get("season", self.season)
+                weekly_results = report.get("weekly_results", [])
+
+                # Save individual BacktestResult records for each gameweek
+                for weekly_result in weekly_results:
+                    gameweek = weekly_result.get("gameweek")
+                    if gameweek is None:
+                        continue
+                    
+                    # Check if result already exists
+                    existing_result = (
+                        db.query(BacktestResult)
+                        .filter(
+                            BacktestResult.model_version == model_version,
+                            BacktestResult.methodology == methodology,
+                            BacktestResult.season == season,
+                            BacktestResult.gameweek == gameweek,
+                        )
+                        .first()
+                    )
+
+                    # Handle NaN values in spearman correlation
+                    spearman_val = weekly_result.get("spearman", 0.0)
+                    if spearman_val is None or (isinstance(spearman_val, float) and np.isnan(spearman_val)):
+                        spearman_val = 0.0
+                    
+                    result_data = {
+                        "model_version": model_version,
+                        "methodology": methodology,
+                        "season": season,
+                        "gameweek": gameweek,
+                        "rmse": float(weekly_result.get("rmse", 0.0)),
+                        "mae": float(weekly_result.get("mae", 0.0)),
+                        "spearman_corr": float(spearman_val),
+                        "n_predictions": int(weekly_result.get("n_predictions", 0)),
+                    }
+
+                    if existing_result:
+                        # Update existing record
+                        for key, value in result_data.items():
+                            setattr(existing_result, key, value)
+                        logger.debug(f"Updated BacktestResult for GW{gameweek}")
+                    else:
+                        # Create new record
+                        result = BacktestResult(**result_data)
+                        db.add(result)
+                        logger.debug(f"Created BacktestResult for GW{gameweek}")
+
+                # Commit all BacktestResult records
+                db.commit()
 
                 # Check if summary already exists for this model_version
                 existing = (
@@ -1402,16 +1511,16 @@ class BacktestEngine:
 
                 summary_data = {
                     "model_version": model_version,
-                    "methodology": report.get("methodology", "expanding_window"),
-                    "season": report.get("season", self.season),
+                    "methodology": methodology,
+                    "season": season,
                     "total_weeks_tested": report.get("total_weeks_tested", 0),
-                    "overall_rmse": overall_metrics.get("rmse", 0.0),
-                    "overall_mae": overall_metrics.get("mae", 0.0),
-                    "overall_spearman_corr": overall_metrics.get("spearman", 0.0),
-                    "r_squared": overall_metrics.get("r_squared", 0.0),
+                    "overall_rmse": float(overall_metrics.get("rmse", 0.0)),
+                    "overall_mae": float(overall_metrics.get("mae", 0.0)),
+                    "overall_spearman_corr": float(overall_metrics.get("spearman", 0.0)),
+                    "r_squared": float(overall_metrics.get("r_squared", 0.0)),
                     "total_predictions": sum(
                         r.get("n_predictions", 0)
-                        for r in report.get("weekly_results", [])
+                        for r in weekly_results
                     ),
                 }
 
@@ -1430,13 +1539,14 @@ class BacktestEngine:
                     summary_id = summary.id
                     logger.info(f"Created BacktestSummary record ID: {summary_id}")
 
+                logger.info(f"Saved {len(weekly_results)} BacktestResult records to database")
                 return summary_id
 
             finally:
                 db.close()
 
         except Exception as e:
-            logger.error(f"Error saving report to database: {str(e)}")
+            logger.error(f"Error saving report to database: {str(e)}", exc_info=True)
             return None
 
     def _manage_memory(self):

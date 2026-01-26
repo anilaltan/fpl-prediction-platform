@@ -793,7 +793,7 @@ class EntityResolutionService:
                 )
                 existing.fbref_name = fbref_name if fbref_name else existing.fbref_name
                 existing.canonical_name = canonical_name
-                if confidence_score is not None:
+                if confidence_score is not None and not pd.isna(confidence_score):
                     existing.confidence_score = Decimal(str(confidence_score))
                 existing.manually_verified = manually_verified
                 existing.updated_at = datetime.now(timezone.utc)
@@ -806,14 +806,23 @@ class EntityResolutionService:
                 return existing
             else:
                 # Create new mapping
+                # Handle pandas NA values in confidence_score
+                confidence_decimal = None
+                if confidence_score is not None and not pd.isna(confidence_score):
+                    try:
+                        confidence_decimal = Decimal(str(confidence_score))
+                    except (ValueError, TypeError):
+                        logger.warning(
+                            f"Could not convert confidence_score to Decimal for FPL ID {fpl_id}: {confidence_score}"
+                        )
+                        confidence_decimal = None
+
                 new_mapping = EntityMapping(
                     fpl_id=fpl_id,
                     canonical_name=canonical_name,
                     understat_name=understat_name,
                     fbref_name=fbref_name,
-                    confidence_score=Decimal(str(confidence_score))
-                    if confidence_score is not None
-                    else None,
+                    confidence_score=confidence_decimal,
                     manually_verified=manually_verified,
                 )
 
@@ -1201,6 +1210,15 @@ class EntityResolutionService:
                 if resolution.get("matched"):
                     report["matched_count"] += 1
                     confidence = resolution.get("confidence", 0.0)
+                    
+                    # Handle pandas NA values in confidence
+                    if pd.isna(confidence):
+                        confidence = 0.0
+                    else:
+                        try:
+                            confidence = float(confidence)
+                        except (ValueError, TypeError):
+                            confidence = 0.0
 
                     if confidence >= 0.85:
                         report["high_confidence_count"] += 1

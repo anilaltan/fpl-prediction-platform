@@ -473,3 +473,52 @@ class MarketIntelligence(Base):
             name="uq_market_intelligence_player_gameweek_season",
         ),
     )
+
+
+class ThirdPartyDataCache(Base):
+    """
+    Cache for third-party data (Understat/FBref) to avoid real-time scraping during predictions.
+    Data is pre-fetched in background jobs and used during ML predictions for fast access.
+    """
+
+    __tablename__ = "third_party_data_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False, index=True)
+    season = Column(String(9), nullable=False, index=True, default="2025-26")
+
+    # Understat metrics
+    understat_xg = Column(Numeric(6, 3))
+    understat_xa = Column(Numeric(6, 3))
+    understat_npxg = Column(Numeric(6, 3))
+    understat_xg_per_90 = Column(Numeric(6, 3))
+    understat_xa_per_90 = Column(Numeric(6, 3))
+    understat_npxg_per_90 = Column(Numeric(6, 3))
+
+    # FBref defensive metrics
+    fbref_blocks = Column(Integer, default=0)
+    fbref_blocks_per_90 = Column(Numeric(6, 3))
+    fbref_interventions = Column(Integer, default=0)
+    fbref_interventions_per_90 = Column(Numeric(6, 3))
+    fbref_tackles = Column(Integer, default=0)
+    fbref_interceptions = Column(Integer, default=0)
+    fbref_passes = Column(Integer, default=0)
+    fbref_passes_per_90 = Column(Numeric(6, 3))
+
+    # Metadata
+    data_source = Column(String(50))  # 'understat', 'fbref', 'both'
+    confidence_score = Column(Numeric(3, 2))  # 0.0 to 1.0 - matching confidence
+    last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    player = relationship("Player")
+
+    # Unique constraint: one cache entry per player per season
+    __table_args__ = (
+        UniqueConstraint(
+            "player_id",
+            "season",
+            name="uq_third_party_cache_player_season",
+        ),
+    )

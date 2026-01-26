@@ -8,6 +8,8 @@ import pulp
 from typing import Dict, List, Optional, Tuple
 import logging
 
+from app.exceptions import AppException, ValidationError, ModelError
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +44,42 @@ class TeamSolver:
         }
         self.max_players_per_team = 3
 
+    def _validate_players(self, players: List[Dict]) -> None:
+        """
+        Validate player data input.
+
+        Args:
+            players: List of player dictionaries
+
+        Raises:
+            ValidationError: If validation fails
+        """
+        if not players:
+            raise ValidationError("Players list cannot be empty")
+        
+        required_fields = ["id", "price", "position"]
+        for i, player in enumerate(players):
+            for field in required_fields:
+                if field not in player:
+                    raise ValidationError(
+                        f"Player at index {i} missing required field: {field}",
+                        details={"player_index": i, "missing_field": field}
+                    )
+            
+            # Validate position
+            if player["position"] not in ["GK", "DEF", "MID", "FWD"]:
+                raise ValidationError(
+                    f"Invalid position '{player['position']}' for player {player.get('id')}",
+                    details={"player_id": player.get("id"), "position": player["position"]}
+                )
+            
+            # Validate price
+            if not isinstance(player["price"], (int, float)) or player["price"] <= 0:
+                raise ValidationError(
+                    f"Invalid price for player {player.get('id')}",
+                    details={"player_id": player.get("id"), "price": player["price"]}
+                )
+
     def create_optimization_model(
         self,
         players: List[Dict],
@@ -60,218 +98,235 @@ class TeamSolver:
 
         Returns:
             (model, variables_dict) tuple
+            
+        Raises:
+            ValidationError: If input validation fails
+            ModelError: If model creation fails
         """
-        # Create problem: Maximize expected points
-        prob = pulp.LpProblem("FPL_Team_Optimization", pulp.LpMaximize)
+        try:
+            # Validate input
+            self._validate_players(players)
+            
+            # Create problem: Maximize expected points
+            prob = pulp.LpProblem("FPL_Team_Optimization", pulp.LpMaximize)
 
-        # Player indices
-        player_ids = [p["id"] for p in players]
-        _n_players = len(players)
-        weeks = list(range(1, self.horizon_weeks + 1))
+            # Player indices
+            player_ids = [p["id"] for p in players]
+            _n_players = len(players)
+            weeks = list(range(1, self.horizon_weeks + 1))
 
-        # Decision variables
-        # x[i][w] = 1 if player i is in squad in week w, 0 otherwise
-        x = pulp.LpVariable.dicts(
-            "player_in_squad", [(i, w) for i in player_ids for w in weeks], cat="Binary"
-        )
-
-        # y[i][w] = 1 if player i is in starting XI in week w, 0 otherwise
-        y = pulp.LpVariable.dicts(
-            "player_in_xi", [(i, w) for i in player_ids for w in weeks], cat="Binary"
-        )
-
-        # t[i][w] = 1 if player i is transferred in week w, 0 otherwise
-        t = pulp.LpVariable.dicts(
-            "transfer_in", [(i, w) for i in player_ids for w in weeks], cat="Binary"
-        )
-
-        # u[i][w] = 1 if player i is transferred out in week w, 0 otherwise
-        u = pulp.LpVariable.dicts(
-            "transfer_out", [(i, w) for i in player_ids for w in weeks], cat="Binary"
-        )
-
-        # Objective function: Maximize expected points - transfer penalties
-        # Σ(Σ(expected_points[i][w] * y[i][w])) - 4 * Σ(Σ(t[i][w] + u[i][w]) - free_transfers)
-        objective = pulp.lpSum(
-            [
-                players[player_ids.index(i)].get(f"expected_points_gw{w}", 0.0)
-                * y[(i, w)]
-                for i in player_ids
-                for w in weeks
-            ]
-        )
-
-        # Transfer penalty: -4 points per extra transfer beyond free transfers
-        transfer_cost = pulp.lpSum(
-            [
-                self.transfer_penalty * (t[(i, w)] + u[(i, w)])
-                for i in player_ids
-                for w in weeks
-            ]
-        ) - (self.free_transfers * self.transfer_penalty * self.horizon_weeks)
-
-        # Final objective
-        prob += objective - transfer_cost, "Total_Expected_Points"
-
-        # Constraints
-
-        # 1. Budget constraint (for each week)
-        for w in weeks:
-            prob += (
-                pulp.lpSum(
-                    [
-                        players[player_ids.index(i)]["price"] * x[(i, w)]
-                        for i in player_ids
-                    ]
-                )
-                <= self.budget,
-                f"Budget_Week_{w}",
+            # Decision variables
+            # x[i][w] = 1 if player i is in squad in week w, 0 otherwise
+            x = pulp.LpVariable.dicts(
+                "player_in_squad", [(i, w) for i in player_ids for w in weeks], cat="Binary"
             )
 
-        # 2. Squad size constraint: Exactly 15 players
-        for w in weeks:
-            prob += (
-                pulp.lpSum([x[(i, w)] for i in player_ids]) == 15,
-                f"Squad_Size_Week_{w}",
+            # y[i][w] = 1 if player i is in starting XI in week w, 0 otherwise
+            y = pulp.LpVariable.dicts(
+                "player_in_xi", [(i, w) for i in player_ids for w in weeks], cat="Binary"
             )
 
-        # 3. Starting XI size: Exactly 11 players
-        for w in weeks:
-            prob += (
-                pulp.lpSum([y[(i, w)] for i in player_ids]) == 11,
-                f"Starting_XI_Size_Week_{w}",
+            # t[i][w] = 1 if player i is transferred in week w, 0 otherwise
+            t = pulp.LpVariable.dicts(
+                "transfer_in", [(i, w) for i in player_ids for w in weeks], cat="Binary"
             )
 
-        # 4. Starting XI must be subset of squad
-        for i in player_ids:
-            for w in weeks:
-                prob += y[(i, w)] <= x[(i, w)], f"XI_Subset_{i}_{w}"
+            # u[i][w] = 1 if player i is transferred out in week w, 0 otherwise
+            u = pulp.LpVariable.dicts(
+                "transfer_out", [(i, w) for i in player_ids for w in weeks], cat="Binary"
+            )
 
-        # 5. Position constraints
-        _position_map = {"GK": "GK", "DEF": "DEF", "MID": "MID", "FWD": "FWD"}
-        for pos, count in self.squad_structure.items():
+            # Objective function: Maximize expected points - transfer penalties
+            # Σ(Σ(expected_points[i][w] * y[i][w])) - 4 * Σ(Σ(t[i][w] + u[i][w]) - free_transfers)
+            objective = pulp.lpSum(
+                [
+                    players[player_ids.index(i)].get(f"expected_points_gw{w}", 0.0)
+                    * y[(i, w)]
+                    for i in player_ids
+                    for w in weeks
+                ]
+            )
+
+            # Transfer penalty: -4 points per extra transfer beyond free transfers
+            transfer_cost = pulp.lpSum(
+                [
+                    self.transfer_penalty * (t[(i, w)] + u[(i, w)])
+                    for i in player_ids
+                    for w in weeks
+                ]
+            ) - (self.free_transfers * self.transfer_penalty * self.horizon_weeks)
+
+            # Final objective
+            prob += objective - transfer_cost, "Total_Expected_Points"
+
+            # Constraints
+
+            # 1. Budget constraint (for each week)
             for w in weeks:
                 prob += (
                     pulp.lpSum(
                         [
-                            x[(i, w)]
+                            players[player_ids.index(i)]["price"] * x[(i, w)]
                             for i in player_ids
-                            if players[player_ids.index(i)].get("position") == pos
                         ]
                     )
-                    == count,
-                    f"Position_{pos}_Week_{w}",
+                    <= self.budget,
+                    f"Budget_Week_{w}",
                 )
 
-        # 6. Starting XI position constraints (at least 1 GK, etc.)
-        for w in weeks:
-            # At least 1 goalkeeper in starting XI
-            prob += (
-                pulp.lpSum(
-                    [
-                        y[(i, w)]
-                        for i in player_ids
-                        if players[player_ids.index(i)].get("position") == "GK"
-                    ]
-                )
-                >= 1,
-                f"XI_GK_Week_{w}",
-            )
-
-            # At least 3 defenders
-            prob += (
-                pulp.lpSum(
-                    [
-                        y[(i, w)]
-                        for i in player_ids
-                        if players[player_ids.index(i)].get("position") == "DEF"
-                    ]
-                )
-                >= 3,
-                f"XI_DEF_Week_{w}",
-            )
-
-            # At least 1 forward
-            prob += (
-                pulp.lpSum(
-                    [
-                        y[(i, w)]
-                        for i in player_ids
-                        if players[player_ids.index(i)].get("position") == "FWD"
-                    ]
-                )
-                >= 1,
-                f"XI_FWD_Week_{w}",
-            )
-
-        # 7. Max 3 players per team constraint
-        teams = set(p.get("team_id") for p in players if "team_id" in p)
-        for team_id in teams:
+            # 2. Squad size constraint: Exactly 15 players
             for w in weeks:
+                prob += (
+                    pulp.lpSum([x[(i, w)] for i in player_ids]) == 15,
+                    f"Squad_Size_Week_{w}",
+                )
+
+            # 3. Starting XI size: Exactly 11 players
+            for w in weeks:
+                prob += (
+                    pulp.lpSum([y[(i, w)] for i in player_ids]) == 11,
+                    f"Starting_XI_Size_Week_{w}",
+                )
+
+            # 4. Starting XI must be subset of squad
+            for i in player_ids:
+                for w in weeks:
+                    prob += y[(i, w)] <= x[(i, w)], f"XI_Subset_{i}_{w}"
+
+            # 5. Position constraints
+            _position_map = {"GK": "GK", "DEF": "DEF", "MID": "MID", "FWD": "FWD"}
+            for pos, count in self.squad_structure.items():
+                for w in weeks:
+                    prob += (
+                        pulp.lpSum(
+                            [
+                                x[(i, w)]
+                                for i in player_ids
+                                if players[player_ids.index(i)].get("position") == pos
+                            ]
+                        )
+                        == count,
+                        f"Position_{pos}_Week_{w}",
+                    )
+
+            # 6. Starting XI position constraints (at least 1 GK, etc.)
+            for w in weeks:
+                # At least 1 goalkeeper in starting XI
                 prob += (
                     pulp.lpSum(
                         [
-                            x[(i, w)]
+                            y[(i, w)]
                             for i in player_ids
-                            if players[player_ids.index(i)].get("team_id") == team_id
+                            if players[player_ids.index(i)].get("position") == "GK"
                         ]
                     )
-                    <= self.max_players_per_team,
-                    f"Team_Limit_{team_id}_Week_{w}",
+                    >= 1,
+                    f"XI_GK_Week_{w}",
                 )
 
-        # 8. Transfer constraints
-        if current_squad:
-            # Week 1: Initial transfers
-            for i in player_ids:
-                is_current = i in current_squad
-                # If not in current squad but in week 1 squad, must transfer in
+                # At least 3 defenders
                 prob += (
-                    t[(i, 1)] >= x[(i, 1)] - (1 if is_current else 0),
-                    f"Transfer_In_1_{i}",
+                    pulp.lpSum(
+                        [
+                            y[(i, w)]
+                            for i in player_ids
+                            if players[player_ids.index(i)].get("position") == "DEF"
+                        ]
+                    )
+                    >= 3,
+                    f"XI_DEF_Week_{w}",
                 )
-                # If in current squad but not in week 1 squad, must transfer out
+
+                # At least 1 forward
                 prob += (
-                    u[(i, 1)] >= (1 if is_current else 0) - x[(i, 1)],
-                    f"Transfer_Out_1_{i}",
+                    pulp.lpSum(
+                        [
+                            y[(i, w)]
+                            for i in player_ids
+                            if players[player_ids.index(i)].get("position") == "FWD"
+                        ]
+                    )
+                    >= 1,
+                    f"XI_FWD_Week_{w}",
                 )
 
-        # Subsequent weeks: Transfers based on previous week
-        for w in weeks[1:]:
-            for i in player_ids:
-                # Transfer in: not in previous week, but in current week
-                prob += t[(i, w)] >= x[(i, w)] - x[(i, w - 1)], f"Transfer_In_{w}_{i}"
-                # Transfer out: in previous week, but not in current week
-                prob += u[(i, w)] >= x[(i, w - 1)] - x[(i, w)], f"Transfer_Out_{w}_{i}"
-
-        # 9. Locked players (must be in squad)
-        if locked_players:
-            for player_id in locked_players:
-                if player_id in player_ids:
-                    for w in weeks:
-                        prob += (
-                            x[(player_id, w)] == 1,
-                            f"Locked_Player_{player_id}_Week_{w}",
+            # 7. Max 3 players per team constraint
+            teams = set(p.get("team_id") for p in players if "team_id" in p)
+            for team_id in teams:
+                for w in weeks:
+                    prob += (
+                        pulp.lpSum(
+                            [
+                                x[(i, w)]
+                                for i in player_ids
+                                if players[player_ids.index(i)].get("team_id") == team_id
+                            ]
                         )
+                        <= self.max_players_per_team,
+                        f"Team_Limit_{team_id}_Week_{w}",
+                    )
 
-        # 10. Excluded players (cannot be in squad)
-        if excluded_players:
-            for player_id in excluded_players:
-                if player_id in player_ids:
-                    for w in weeks:
-                        prob += (
-                            x[(player_id, w)] == 0,
-                            f"Excluded_Player_{player_id}_Week_{w}",
-                        )
+            # 8. Transfer constraints
+            if current_squad:
+                # Week 1: Initial transfers
+                for i in player_ids:
+                    is_current = i in current_squad
+                    # If not in current squad but in week 1 squad, must transfer in
+                    prob += (
+                        t[(i, 1)] >= x[(i, 1)] - (1 if is_current else 0),
+                        f"Transfer_In_1_{i}",
+                    )
+                    # If in current squad but not in week 1 squad, must transfer out
+                    prob += (
+                        u[(i, 1)] >= (1 if is_current else 0) - x[(i, 1)],
+                        f"Transfer_Out_1_{i}",
+                    )
 
-        variables = {
-            "x": x,  # Squad selection
-            "y": y,  # Starting XI
-            "t": t,  # Transfers in
-            "u": u,  # Transfers out
-        }
+            # Subsequent weeks: Transfers based on previous week
+            for w in weeks[1:]:
+                for i in player_ids:
+                    # Transfer in: not in previous week, but in current week
+                    prob += t[(i, w)] >= x[(i, w)] - x[(i, w - 1)], f"Transfer_In_{w}_{i}"
+                    # Transfer out: in previous week, but not in current week
+                    prob += u[(i, w)] >= x[(i, w - 1)] - x[(i, w)], f"Transfer_Out_{w}_{i}"
 
-        return prob, variables
+            # 9. Locked players (must be in squad)
+            if locked_players:
+                for player_id in locked_players:
+                    if player_id in player_ids:
+                        for w in weeks:
+                            prob += (
+                                x[(player_id, w)] == 1,
+                                f"Locked_Player_{player_id}_Week_{w}",
+                            )
+
+            # 10. Excluded players (cannot be in squad)
+            if excluded_players:
+                for player_id in excluded_players:
+                    if player_id in player_ids:
+                        for w in weeks:
+                            prob += (
+                                x[(player_id, w)] == 0,
+                                f"Excluded_Player_{player_id}_Week_{w}",
+                            )
+
+            variables = {
+                "x": x,  # Squad selection
+                "y": y,  # Starting XI
+                "t": t,  # Transfers in
+                "u": u,  # Transfers out
+            }
+
+            return prob, variables
+            
+        except ValidationError:
+            raise
+        except Exception as e:
+            raise ModelError(
+                f"Failed to create optimization model: {str(e)}",
+                model_name="TeamSolver",
+                details={"error_type": type(e).__name__}
+            )
 
     def solve(
         self,
@@ -305,17 +360,19 @@ class TeamSolver:
                 # Try to use COIN_CMD (CBC), fallback to default
                 try:
                     solver = pulp.COIN_CMD(msg=0)
-                except Exception:
+                except Exception as solver_error:
+                    logger.warning(f"COIN_CMD solver not available, using PULP_CBC_CMD: {str(solver_error)}")
                     solver = pulp.PULP_CBC_CMD(msg=0)
 
             prob.solve(solver)
 
             # Check solution status
             if prob.status != pulp.LpStatusOptimal:
-                logger.warning(f"Optimization status: {pulp.LpStatus[prob.status]}")
+                status_str = pulp.LpStatus[prob.status]
+                logger.warning(f"Optimization status: {status_str}")
                 weeks = list(range(1, self.horizon_weeks + 1))
                 return {
-                    "status": pulp.LpStatus[prob.status],
+                    "status": status_str,
                     "optimal": False,
                     "squads": {w: [] for w in weeks},
                     "starting_xis": {w: [] for w in weeks},
@@ -350,9 +407,16 @@ class TeamSolver:
 
             return solution
 
-        except Exception as e:
-            logger.error(f"Error solving optimization: {str(e)}")
+        except (ValidationError, ModelError):
+            # Re-raise AppException subclasses as-is
             raise
+        except Exception as e:
+            logger.error(f"Error solving optimization: {str(e)}", exc_info=True)
+            raise ModelError(
+                f"Optimization solver failed: {str(e)}",
+                model_name="TeamSolver",
+                details={"error_type": type(e).__name__, "solver": str(solver) if solver else "default"}
+            )
 
     def _extract_solution(
         self, prob: pulp.LpProblem, variables: Dict, players: List[Dict]

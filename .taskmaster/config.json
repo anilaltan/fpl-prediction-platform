@@ -1,20 +1,20 @@
 {
   "models": {
     "main": {
-      "provider": "claude-code",
-      "modelId": "sonnet",
+      "provider": "gemini-cli",
+      "modelId": "gemini-3-pro-preview",
       "maxTokens": 64000,
       "temperature": 0.2
     },
     "research": {
-      "provider": "perplexity",
-      "modelId": "sonar",
+      "provider": "openrouter",
+      "modelId": "google/gemini-2.5-pro-exp-03-25",
       "maxTokens": 8700,
       "temperature": 0.1
     },
     "fallback": {
-      "provider": "anthropic",
-      "modelId": "claude-3-7-sonnet-20250219",
+      "provider": "claude-code",
+      "modelId": "opus",
       "maxTokens": 120000,
       "temperature": 0.2
     }

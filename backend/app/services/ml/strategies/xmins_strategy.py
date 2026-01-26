@@ -24,7 +24,36 @@ except ImportError:
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
-from ..interfaces import ModelInterface
+# Handle both relative and absolute imports for script/module compatibility
+try:
+    from ..interfaces import ModelInterface
+    from ..calculations import (
+        calculate_rolling_average,
+        calculate_lag_feature,
+        calculate_clean_sheet_rate,
+        pad_list,
+    )
+except ImportError:
+    # Fallback for direct script execution
+    import sys
+    import os
+    from pathlib import Path
+    # Add backend directory to path (works in Docker where /app is the backend root)
+    current_file = Path(__file__).resolve()
+    # Try /app first (Docker container), then fallback to relative path
+    if os.path.exists("/app"):
+        backend_dir = Path("/app")
+    else:
+        backend_dir = current_file.parent.parent.parent.parent
+    if str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    from app.services.ml.interfaces import ModelInterface
+    from app.services.ml.calculations import (
+        calculate_rolling_average,
+        calculate_lag_feature,
+        calculate_clean_sheet_rate,
+        pad_list,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +75,7 @@ class XMinsStrategy(ModelInterface):
         """
         self._initialize_empty_model()
         self.feature_names: Optional[List[str]] = None
-        self._loaded: bool = True  # Models are initialized, so considered "loaded"
+        self._loaded: bool = False  # Start as False, will be set to True after load()
         self._model_path: Optional[str] = None
 
     async def load(self, model_path: Optional[str] = None) -> None:
@@ -56,24 +85,69 @@ class XMinsStrategy(ModelInterface):
         Args:
             model_path: Optional path to model file. If None, keeps current empty model.
         """
-        if not model_path or not os.path.exists(model_path):
+        logger.info(f"[XMinsStrategy.load] Starting load, model_path={model_path}")
+        
+        if not model_path:
+            logger.warning("[XMinsStrategy.load] No model path provided, keeping empty model")
             return
+        
+        if not os.path.exists(model_path):
+            error_msg = f"Model file does not exist: {model_path}"
+            logger.error(f"[XMinsStrategy.load] {error_msg}")
+            raise FileNotFoundError(error_msg)
 
         self._model_path = model_path
+        logger.info(f"[XMinsStrategy.load] Model file exists, loading pickle from {model_path}")
 
         try:
             # Load from pickle file asynchronously
-            loop = asyncio.get_event_loop()
+            # Use get_running_loop() if available, otherwise get_event_loop()
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+            logger.info(f"[XMinsStrategy.load] Running pickle load in executor...")
             model_data = await loop.run_in_executor(None, self._load_pickle, model_path)
+            logger.info(f"[XMinsStrategy.load] Pickle loaded, type: {type(model_data)}, keys: {list(model_data.keys()) if isinstance(model_data, dict) else 'not a dict'}")
 
-            if model_data.get("xmins_model"):
-                self.model = model_data["xmins_model"]
+            xmins_model = model_data.get("xmins_model")
+            logger.info(f"[XMinsStrategy.load] xmins_model extracted: {xmins_model is not None}, type: {type(xmins_model) if xmins_model is not None else 'None'}")
+            
+            if xmins_model is not None:
+                # Set model first, then flags, to ensure atomic state update
+                self.model = xmins_model
                 self.scaler = model_data.get("xmins_scaler", StandardScaler())
-                self._is_trained = True
                 self.feature_names = model_data.get("xmins_feature_names")
-                logger.info(f"Loaded xMins model from {model_path}")
+                # Set flags after model is set to ensure consistency
+                self._is_trained = True
+                self._loaded = True
+                logger.info(f"[XMinsStrategy.load] Successfully loaded xMins model from {model_path} (type: {type(xmins_model).__name__})")
+                logger.info(f"[XMinsStrategy.load] State after load: is_trained={self._is_trained}, is_loaded={self._loaded}, model={'exists' if self.model is not None else 'None'}")
+                # Double-check that model is actually set
+                if self.model is None:
+                    raise RuntimeError("Model was set to None after assignment - this should not happen")
+            else:
+                available_keys = list(model_data.keys()) if isinstance(model_data, dict) else "not a dict"
+                error_msg = (
+                    f"No xmins_model found in {model_path} or model is None. "
+                    f"Available keys: {available_keys}. "
+                    f"xmins_model value: {xmins_model}"
+                )
+                logger.error(f"[XMinsStrategy.load] {error_msg}")
+                # Reset flags to ensure we don't have inconsistent state
+                self._is_trained = False
+                self._loaded = False
+                self.model = None
+                # Raise exception to signal load failure
+                raise ValueError(error_msg)
         except Exception as e:
-            logger.warning(f"Failed to load xMins model from {model_path}: {str(e)}")
+            logger.error(f"[XMinsStrategy.load] Failed to load xMins model from {model_path}: {str(e)}", exc_info=True)
+            # Reset flags on error
+            self._is_trained = False
+            self._loaded = False
+            self.model = None
+            # Re-raise exception to signal load failure
+            raise
 
     def _initialize_empty_model(self) -> None:
         """Initialize empty model (not trained)."""
@@ -146,107 +220,90 @@ class XMinsStrategy(ModelInterface):
     ) -> np.ndarray:
         """
         Extract features for xMins prediction.
-
-        Features:
-        - days_since_last_match: Days since last match (PRIMARY FEATURE)
-        - is_cup_week: Binary (1 if cup match week, 0 otherwise) (PRIMARY FEATURE)
-        - injury_status: 0=fit, 1=doubtful, 2=out
-        - recent_minutes_avg: Average minutes in last 3 matches
-        - position_depth: Squad depth at position (1-3)
-        - form_score: Recent form
-        - price: Player price (proxy for importance)
+        
+        Must match the 24 features used during training:
+        - price (1)
+        - DefCon features (7): blocks_per_90, interventions_per_90, passes_per_90, 
+          defcon_floor_points, avg_blocks, avg_interventions, avg_passes
+        - Lag features (16): xg_lag_1, xg_lag_3, xg_lag_5, xg_rolling_3, xg_rolling_5,
+          xa_lag_1, xa_lag_3, xa_lag_5, xa_rolling_3, xa_rolling_5,
+          cs_lag_1, cs_lag_3, cs_lag_5, cs_rolling_3, cs_rolling_5, cs_rate
         """
-        # PRIMARY FEATURE 1: Days since last match
-        last_match_date = player_data.get("last_match_date")
-        if last_match_date:
-            if isinstance(last_match_date, str):
-                try:
-                    last_match = datetime.fromisoformat(
-                        last_match_date.replace("Z", "+00:00")
-                    )
-                    days_since_last_match = (
-                        datetime.now() - last_match.replace(tzinfo=None)
-                    ).days
-                except Exception:
-                    days_since_last_match = 7
-            else:
-                days_since_last_match = (
-                    datetime.now() - last_match_date.replace(tzinfo=None)
-                ).days
-        else:
-            # Try to calculate from recent matches
-            recent_matches = player_data.get("recent_matches", [])
-            if recent_matches:
-                last_match_date_str = (
-                    recent_matches[0].get("date")
-                    if isinstance(recent_matches[0], dict)
-                    else None
-                )
-                if last_match_date_str:
-                    try:
-                        last_match = datetime.fromisoformat(
-                            last_match_date_str.replace("Z", "+00:00")
-                        )
-                        days_since_last_match = (
-                            datetime.now() - last_match.replace(tzinfo=None)
-                        ).days
-                    except Exception:
-                        days_since_last_match = 7
-                else:
-                    days_since_last_match = 7
-            else:
-                days_since_last_match = 7  # Default: full week rest
-
-        # PRIMARY FEATURE 2: is_cup_week
-        is_cup_week = 0
-        if fixture_data:
-            has_cup_match = fixture_data.get("has_cup_match", False)
-            is_midweek = fixture_data.get("is_midweek", False)
-            is_cup_week = 1 if (has_cup_match or is_midweek) else 0
-        else:
-            is_cup_week = 1 if player_data.get("is_cup_week", False) else 0
-
-        # Injury status (0=fit, 1=doubtful, 2=out)
-        injury_status_map = {"a": 0, "d": 1, "i": 2, "n": 0, "s": 2}
-        status = player_data.get("status", "a").lower()
-        injury_status = injury_status_map.get(status, 0)
-
-        # Recent minutes average
+        # 1. Price (normalized to 0-1 range, typically 40-150 -> 0.4-1.5, but we'll use raw/100)
+        price = float(player_data.get("price", 50.0))
+        
+        # 2. DefCon features (7 features)
+        blocks_per_90 = float(player_data.get("blocks_per_90", 0.0))
+        interventions_per_90 = float(player_data.get("interventions_per_90", 0.0))
+        passes_per_90 = float(player_data.get("passes_per_90", 0.0))
+        defcon_floor_points = float(player_data.get("defcon_floor_points", 0.0))
+        avg_blocks = float(player_data.get("avg_blocks", 0.0))
+        avg_interventions = float(player_data.get("avg_interventions", 0.0))
+        avg_passes = float(player_data.get("avg_passes", 0.0))
+        
+        # 3. Lag features (16 features) - extract from recent stats using pure functions
+        recent_xg = pad_list(player_data.get("recent_xg", []), 5)
+        recent_xa = pad_list(player_data.get("recent_xa", []), 5)
+        recent_cs = pad_list(player_data.get("recent_cs", []), 5)  # Clean sheets
         recent_minutes = player_data.get("recent_minutes", [])
-        if recent_minutes and len(recent_minutes) > 0:
-            slice_mins = (
-                recent_minutes[:3] if len(recent_minutes) >= 3 else recent_minutes
-            )
-            recent_minutes_avg = (
-                float(np.mean(slice_mins)) if len(slice_mins) > 0 else 90.0
-            )
-        else:
-            recent_minutes_avg = player_data.get("minutes_per_game", 90.0)
-
-        # Position depth
-        position_depth = player_data.get("position_depth", 2.0)
-
-        # Form score
-        form_score = player_data.get("form", 0.0)
-
-        # Price (normalized)
-        price = player_data.get("price", 50.0) / 100.0
-
-        # Team rotation risk
-        rotation_risk = player_data.get("rotation_risk", 0.5)
-
-        features = np.array(
-            [
-                days_since_last_match,
-                is_cup_week,
-                injury_status,
-                recent_minutes_avg / 90.0,
-                position_depth / 3.0,
-                form_score / 10.0,
-                price,
-                rotation_risk,
-            ]
-        )
+        
+        # xG lag features (1, 3, 5)
+        xg_lag_1 = calculate_lag_feature(recent_xg, 1)
+        xg_lag_3 = calculate_lag_feature(recent_xg, 3)
+        xg_lag_5 = calculate_lag_feature(recent_xg, 5)
+        
+        # xG rolling averages (3, 5)
+        xg_rolling_3 = calculate_rolling_average(recent_xg, 3)
+        xg_rolling_5 = calculate_rolling_average(recent_xg, 5)
+        
+        # xA lag features (1, 3, 5)
+        xa_lag_1 = calculate_lag_feature(recent_xa, 1)
+        xa_lag_3 = calculate_lag_feature(recent_xa, 3)
+        xa_lag_5 = calculate_lag_feature(recent_xa, 5)
+        
+        # xA rolling averages (3, 5)
+        xa_rolling_3 = calculate_rolling_average(recent_xa, 3)
+        xa_rolling_5 = calculate_rolling_average(recent_xa, 5)
+        
+        # Clean sheet lag features (1, 3, 5)
+        cs_lag_1 = calculate_lag_feature(recent_cs, 1)
+        cs_lag_3 = calculate_lag_feature(recent_cs, 3)
+        cs_lag_5 = calculate_lag_feature(recent_cs, 5)
+        
+        # Clean sheet rolling averages (3, 5)
+        cs_rolling_3 = calculate_rolling_average(recent_cs, 3)
+        cs_rolling_5 = calculate_rolling_average(recent_cs, 5)
+        
+        # Clean sheet rate (percentage of games with clean sheet)
+        cs_rate = calculate_clean_sheet_rate(recent_cs, recent_minutes)
+        
+        # Build feature array in the same order as training: price, defcon (7), lag (16)
+        features = np.array([
+            price,  # 1
+            blocks_per_90,  # 2
+            interventions_per_90,  # 3
+            passes_per_90,  # 4
+            defcon_floor_points,  # 5
+            avg_blocks,  # 6
+            avg_interventions,  # 7
+            avg_passes,  # 8
+            xg_lag_1,  # 9
+            xg_lag_3,  # 10
+            xg_lag_5,  # 11
+            xg_rolling_3,  # 12
+            xg_rolling_5,  # 13
+            xa_lag_1,  # 14
+            xa_lag_3,  # 15
+            xa_lag_5,  # 16
+            xa_rolling_3,  # 17
+            xa_rolling_5,  # 18
+            cs_lag_1,  # 19
+            cs_lag_3,  # 20
+            cs_lag_5,  # 21
+            cs_rolling_3,  # 22
+            cs_rolling_5,  # 23
+            cs_rate,  # 24
+        ], dtype=np.float32)
 
         return features.reshape(1, -1)
 
@@ -360,8 +417,10 @@ class XMinsStrategy(ModelInterface):
         Returns:
             Dictionary with 'p_start' and 'expected_minutes'
         """
-        if not self.is_loaded:
-            raise RuntimeError("Model not loaded. Call load() first.")
+        # Check if model is available (either loaded or trained with model object)
+        # Allow prediction if model is trained and model object exists
+        if not self.is_trained or self.model is None:
+            raise RuntimeError("Model not loaded or not trained. Call load() first.")
 
         p_start = self.predict_start_probability(player_data, fixture_data)
         expected_minutes = self.predict_expected_minutes(player_data, fixture_data)

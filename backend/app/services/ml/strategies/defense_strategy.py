@@ -23,7 +23,24 @@ except ImportError:
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
-from ..interfaces import ModelInterface
+# Handle both relative and absolute imports for script/module compatibility
+try:
+    from ..interfaces import ModelInterface
+except ImportError:
+    # Fallback for direct script execution
+    import sys
+    import os
+    from pathlib import Path
+    # Add backend directory to path (works in Docker where /app is the backend root)
+    current_file = Path(__file__).resolve()
+    # Try /app first (Docker container), then fallback to relative path
+    if os.path.exists("/app"):
+        backend_dir = Path("/app")
+    else:
+        backend_dir = current_file.parent.parent.parent.parent
+    if str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    from app.services.ml.interfaces import ModelInterface
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +367,8 @@ class DefenseStrategy(ModelInterface):
         Returns:
             Dictionary with 'xcs' and optionally 'defcon_points'
         """
-        if not self.is_loaded:
+        # Check if model is available (either loaded or trained with model object)
+        if not self.is_loaded and not (self.is_fitted and self.pcs_model is not None):
             raise RuntimeError("Model not loaded. Call load() first.")
 
         xcs = self.predict_clean_sheet_probability(

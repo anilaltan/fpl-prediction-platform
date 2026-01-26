@@ -13,6 +13,18 @@ from sqlalchemy.orm import Session
 import logging
 
 from app.models import EntityMapping
+from app.services.ml.calculations import (
+    calculate_rolling_average,
+    calculate_lag_feature,
+    calculate_clean_sheet_rate,
+    calculate_per_90,
+    calculate_xg_per_90,
+    calculate_xa_per_90,
+    calculate_goals_per_90,
+    calculate_assists_per_90,
+    calculate_xgc_per_90,
+    calculate_goals_conceded_per_90,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,86 +190,45 @@ class ComponentFeatureEngineering:
 
         features = {}
 
-        # Lag features for xG
+        # Convert DataFrame columns to lists for pure function calculations
+        # Data is sorted descending by gameweek (most recent first)
+        xg_list = player_data["xg"].tolist() if len(player_data) > 0 else []
+        xa_list = player_data["xa"].tolist() if len(player_data) > 0 else []
+        cs_list = player_data["clean_sheets"].tolist() if len(player_data) > 0 else []
+        minutes_list = player_data["minutes"].tolist() if len(player_data) > 0 else []
+        
+        # Convert NaN values to 0.0
+        xg_list = [0.0 if pd.isna(x) else float(x) for x in xg_list]
+        xa_list = [0.0 if pd.isna(x) else float(x) for x in xa_list]
+        cs_list = [0.0 if pd.isna(x) else float(x) for x in cs_list]
+        minutes_list = [0.0 if pd.isna(x) else float(x) for x in minutes_list]
+        
+        # Lag features for xG using pure functions
         for lag in lag_periods:
-            if len(player_data) >= lag:
-                xg_lag = (
-                    player_data.iloc[lag - 1]["xg"] if lag <= len(player_data) else 0.0
-                )
-                features[f"xg_lag_{lag}"] = (
-                    float(xg_lag) if not pd.isna(xg_lag) else 0.0
-                )
-            else:
-                features[f"xg_lag_{lag}"] = 0.0
-
-        # Rolling averages for xG (3, 5 gameweeks)
+            features[f"xg_lag_{lag}"] = calculate_lag_feature(xg_list, lag)
+        
+        # Rolling averages for xG (3, 5 gameweeks) using pure functions
         for window in [3, 5]:
-            if len(player_data) >= window:
-                xg_rolling = player_data.head(window)["xg"].mean()
-                features[f"xg_rolling_{window}"] = (
-                    float(xg_rolling) if not pd.isna(xg_rolling) else 0.0
-                )
-            else:
-                features[f"xg_rolling_{window}"] = 0.0
-
-        # Lag features for xA
+            features[f"xg_rolling_{window}"] = calculate_rolling_average(xg_list, window)
+        
+        # Lag features for xA using pure functions
         for lag in lag_periods:
-            if len(player_data) >= lag:
-                xa_lag = (
-                    player_data.iloc[lag - 1]["xa"] if lag <= len(player_data) else 0.0
-                )
-                features[f"xa_lag_{lag}"] = (
-                    float(xa_lag) if not pd.isna(xa_lag) else 0.0
-                )
-            else:
-                features[f"xa_lag_{lag}"] = 0.0
-
-        # Rolling averages for xA (3, 5 gameweeks)
+            features[f"xa_lag_{lag}"] = calculate_lag_feature(xa_list, lag)
+        
+        # Rolling averages for xA (3, 5 gameweeks) using pure functions
         for window in [3, 5]:
-            if len(player_data) >= window:
-                xa_rolling = player_data.head(window)["xa"].mean()
-                features[f"xa_rolling_{window}"] = (
-                    float(xa_rolling) if not pd.isna(xa_rolling) else 0.0
-                )
-            else:
-                features[f"xa_rolling_{window}"] = 0.0
-
-        # Lag features for clean sheets
+            features[f"xa_rolling_{window}"] = calculate_rolling_average(xa_list, window)
+        
+        # Lag features for clean sheets using pure functions
         for lag in lag_periods:
-            if len(player_data) >= lag:
-                cs_lag = (
-                    player_data.iloc[lag - 1]["clean_sheets"]
-                    if lag <= len(player_data)
-                    else 0.0
-                )
-                features[f"cs_lag_{lag}"] = (
-                    float(cs_lag) if not pd.isna(cs_lag) else 0.0
-                )
-            else:
-                features[f"cs_lag_{lag}"] = 0.0
-
-        # Rolling averages for clean sheets (3, 5 gameweeks)
+            features[f"cs_lag_{lag}"] = calculate_lag_feature(cs_list, lag)
+        
+        # Rolling averages for clean sheets (3, 5 gameweeks) using pure functions
         for window in [3, 5]:
-            if len(player_data) >= window:
-                cs_rolling = player_data.head(window)["clean_sheets"].mean()
-                features[f"cs_rolling_{window}"] = (
-                    float(cs_rolling) if not pd.isna(cs_rolling) else 0.0
-                )
-            else:
-                features[f"cs_rolling_{window}"] = 0.0
-
-        # Clean sheet rate (percentage of games with clean sheet)
-        if len(player_data) > 0:
-            games_with_minutes = player_data[player_data["minutes"] > 0]
-            if len(games_with_minutes) > 0:
-                cs_rate = (games_with_minutes["clean_sheets"] > 0).sum() / len(
-                    games_with_minutes
-                )
-                features["cs_rate"] = float(cs_rate)
-            else:
-                features["cs_rate"] = 0.0
-        else:
-            features["cs_rate"] = 0.0
+            features[f"cs_rolling_{window}"] = calculate_rolling_average(cs_list, window)
+        
+        # Clean sheet rate using pure function
+        features["cs_rate"] = calculate_clean_sheet_rate(cs_list, minutes_list)
 
         return features
 
@@ -346,6 +317,87 @@ class ComponentFeatureEngineering:
 
         return features_df, np.array(labels)
 
+    def extract_xmins_features_for_prediction(
+        self,
+        player_stats: pd.DataFrame,
+        fpl_id: int,
+        gameweek: int,
+        position: str,
+        price: float,
+        season: str = "2025-26",
+    ) -> np.ndarray:
+        """
+        Extract xMins features for a single player during prediction.
+        Uses the same feature engineering as training to ensure consistency.
+
+        Args:
+            player_stats: DataFrame with player gameweek stats (historical data)
+            fpl_id: Player FPL ID
+            gameweek: Current gameweek
+            position: Player position
+            price: Player price
+            season: Season identifier
+
+        Returns:
+            NumPy array with features (same order as training)
+        """
+        # Get DefCon features
+        defcon_features = self.extract_defcon_features(
+            player_stats, fpl_id, gameweek, season
+        )
+
+        # Get lag features
+        lag_features = self.create_lag_features(
+            player_stats, fpl_id, gameweek, season
+        )
+
+        # Combine all features in the same order as training
+        # Exclude fpl_id, gameweek, position from feature columns
+        feature_dict = {
+            "price": price,
+            **defcon_features,
+            **lag_features,
+        }
+
+        # Get the feature order from a sample (or use known order)
+        # DefCon features (7)
+        defcon_keys = [
+            "blocks_per_90",
+            "interventions_per_90",
+            "passes_per_90",
+            "defcon_floor_points",
+            "avg_blocks",
+            "avg_interventions",
+            "avg_passes",
+        ]
+
+        # Lag features (16)
+        lag_keys = [
+            "xg_lag_1",
+            "xg_lag_3",
+            "xg_lag_5",
+            "xg_rolling_3",
+            "xg_rolling_5",
+            "xa_lag_1",
+            "xa_lag_3",
+            "xa_lag_5",
+            "xa_rolling_3",
+            "xa_rolling_5",
+            "cs_lag_1",
+            "cs_lag_3",
+            "cs_lag_5",
+            "cs_rolling_3",
+            "cs_rolling_5",
+            "cs_rate",
+        ]
+
+        # Build feature array in correct order: price, defcon, lag
+        features = [feature_dict.get("price", 5.0)]
+        features.extend([feature_dict.get(key, 0.0) for key in defcon_keys])
+        features.extend([feature_dict.get(key, 0.0) for key in lag_keys])
+
+        return np.array(features, dtype=np.float32).reshape(1, -1)
+
     def prepare_attack_features(
         self, training_data: pd.DataFrame, season: str = "2025-26"
     ) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray]:
@@ -399,23 +451,18 @@ class ComponentFeatureEngineering:
                 & (training_data_sorted["season"] == season)
             ]
 
-            # Calculate per-90 stats
+            # Calculate per-90 stats using pure functions
             if len(player_historical) > 0:
-                total_minutes = player_historical["minutes"].sum()
-                if total_minutes > 0:
-                    xg_per_90 = (player_historical["xg"].sum() / total_minutes) * 90.0
-                    xa_per_90 = (player_historical["xa"].sum() / total_minutes) * 90.0
-                    goals_per_90 = (
-                        player_historical["goals"].sum() / total_minutes
-                    ) * 90.0
-                    assists_per_90 = (
-                        player_historical["assists"].sum() / total_minutes
-                    ) * 90.0
-                else:
-                    xg_per_90 = 0.0
-                    xa_per_90 = 0.0
-                    goals_per_90 = 0.0
-                    assists_per_90 = 0.0
+                total_minutes = float(player_historical["minutes"].sum())
+                xg_total = float(player_historical["xg"].sum())
+                xa_total = float(player_historical["xa"].sum())
+                goals_total = float(player_historical["goals"].sum())
+                assists_total = float(player_historical["assists"].sum())
+                
+                xg_per_90 = calculate_xg_per_90(xg_total, total_minutes)
+                xa_per_90 = calculate_xa_per_90(xa_total, total_minutes)
+                goals_per_90 = calculate_goals_per_90(goals_total, total_minutes)
+                assists_per_90 = calculate_assists_per_90(assists_total, total_minutes)
             else:
                 xg_per_90 = 0.0
                 xa_per_90 = 0.0
@@ -524,26 +571,24 @@ class ComponentFeatureEngineering:
                 & (training_data_sorted["season"] == season)
             ]
 
-            # Calculate defensive stats
+            # Calculate defensive stats using pure functions
             if len(player_historical) > 0:
-                total_minutes = player_historical["minutes"].sum()
-                if total_minutes > 0:
-                    xgc_per_90 = (player_historical["xgc"].sum() / total_minutes) * 90.0
-                    goals_conceded_per_90 = (
-                        player_historical["goals_conceded"].sum() / total_minutes
-                    ) * 90.0
-                else:
-                    xgc_per_90 = 0.0
-                    goals_conceded_per_90 = 0.0
+                total_minutes = float(player_historical["minutes"].sum())
+                xgc_total = float(player_historical["xgc"].sum())
+                goals_conceded_total = float(player_historical["goals_conceded"].sum())
+                
+                xgc_per_90 = calculate_xgc_per_90(xgc_total, total_minutes)
+                goals_conceded_per_90 = calculate_goals_conceded_per_90(
+                    goals_conceded_total, total_minutes
+                )
 
-                # Clean sheet rate
-                games_with_minutes = player_historical[player_historical["minutes"] > 0]
-                if len(games_with_minutes) > 0:
-                    cs_rate = (games_with_minutes["clean_sheets"] > 0).sum() / len(
-                        games_with_minutes
-                    )
-                else:
-                    cs_rate = 0.0
+                # Clean sheet rate using pure function
+                cs_list = player_historical["clean_sheets"].tolist()
+                minutes_list = player_historical["minutes"].tolist()
+                # Convert NaN values to 0.0
+                cs_list = [0.0 if pd.isna(x) else float(x) for x in cs_list]
+                minutes_list = [0.0 if pd.isna(x) else float(x) for x in minutes_list]
+                cs_rate = calculate_clean_sheet_rate(cs_list, minutes_list)
             else:
                 xgc_per_90 = 0.0
                 goals_conceded_per_90 = 0.0

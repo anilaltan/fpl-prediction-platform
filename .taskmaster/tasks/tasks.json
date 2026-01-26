@@ -2,724 +2,765 @@
   "master": {
     "tasks": [
       {
-        "id": "1",
-        "title": "Database Schema and Infrastructure Setup",
-        "description": "Initialize the PostgreSQL 15 database with TimescaleDB extension and create core tables for players, teams, and stats.",
-        "details": "Implement the schema provided in the PRD. Use `CREATE EXTENSION IF NOT EXISTS timescaledb;` followed by `create_hypertable` for `player_stats` and `team_stats` on the `timestamp` column. Define constraints for player positions (GK, DEF, MID, FWD) and unique indexes for (player_id, gameweek, season).",
-        "testStrategy": "Verify table creation using SQL queries. Ensure hypertables are correctly partitioned by running `SELECT * FROM timescaledb_information.hypertables;`.",
+        "id": "13",
+        "title": "Setup Test Infrastructure and Configuration",
+        "description": "Initialize the testing environment with Pytest, async fixtures, and a dedicated test database configuration to support the test pyramid strategy.",
+        "details": "Create `tests/conftest.py` with session-scoped and function-scoped fixtures. Configure a separate test database URL in `config.py` to ensure tests do not pollute the development/production database. Install `pytest`, `pytest-asyncio`, and `hypothesis` if not present. Create the folder structure `tests/unit`, `tests/integration`, `tests/performance`. Ensure `backend` is importable by tests (e.g., via `PYTHONPATH` or `setup.py` editable install).",
+        "testStrategy": "Run `pytest` with a simple dummy test to verify configuration and database connection/teardown logic.",
         "priority": "high",
         "dependencies": [],
         "status": "done",
         "subtasks": [
           {
             "id": 1,
-            "title": "Initialize Database and TimescaleDB Extension",
-            "description": "Set up the PostgreSQL 15 environment and enable the TimescaleDB extension for time-series data management.",
+            "title": "Install Testing Dependencies",
+            "description": "Add necessary testing libraries to requirements and install them in the environment.",
             "dependencies": [],
-            "details": "Connect to the PostgreSQL instance and execute 'CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;' to enable hypertable functionality.",
+            "details": "Update the project's dependency management file (e.g., requirements.txt or pyproject.toml) to include 'pytest', 'pytest-asyncio', 'httpx' (for async API testing), and 'hypothesis'. Run the installation command to ensure packages are available in the development environment.",
             "status": "done",
-            "testStrategy": "Run 'SELECT extname FROM pg_extension;' and verify that 'timescaledb' appears in the result set.",
-            "updatedAt": "2026-01-18T22:41:36.728Z",
+            "testStrategy": "Verify installation by running 'pytest --version' in the command line.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-25T23:09:50.743Z"
+          },
+          {
+            "id": 2,
+            "title": "Configure Test Environment Variables",
+            "description": "Update the configuration module to support a separate test database URL.",
+            "dependencies": [
+              1
+            ],
+            "details": "Modify `backend/app/core/config.py` (or equivalent config file found in analysis) to load a `TEST_DATABASE_URL` from environment variables, defaulting to a local SQLite or separate PostgreSQL instance if not provided. Ensure the `Settings` class can distinguish between 'testing', 'development', and 'production' environments.",
+            "status": "done",
+            "testStrategy": "Import the settings in a python shell and verify that setting `MODE=TEST` changes the database URL to the test version.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-25T23:09:50.752Z"
+          },
+          {
+            "id": 3,
+            "title": "Create Test Directory Structure",
+            "description": "Initialize the standard testing folder hierarchy to support the test pyramid.",
+            "dependencies": [
+              1
+            ],
+            "details": "Create the root `tests` directory if it doesn't exist. Inside it, create subdirectories: `tests/unit`, `tests/integration`, `tests/performance`, and `tests/e2e`. Add `__init__.py` files where necessary to ensure test discovery works correctly.",
+            "status": "done",
+            "testStrategy": "Run `ls -R tests` (or equivalent) to verify the directory structure is created.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-25T23:09:50.762Z"
+          },
+          {
+            "id": 4,
+            "title": "Implement Pytest Configuration and Fixtures",
+            "description": "Set up `conftest.py` with essential async fixtures for database and app instance management.",
+            "dependencies": [
+              2,
+              3
+            ],
+            "details": "Create `tests/conftest.py`. Define a `session`-scoped fixture to create/drop the test database schema. Define a `function`-scoped fixture to provide an async database session that rolls back changes after each test. Define an `async_client` fixture using `httpx.AsyncClient` for testing FastAPI endpoints.",
+            "status": "done",
+            "testStrategy": null,
+            "parentId": "undefined",
+            "updatedAt": "2026-01-25T23:09:50.771Z"
+          },
+          {
+            "id": 5,
+            "title": "Verify Setup with Smoke Test",
+            "description": "Create a simple dummy test to validate the testing infrastructure and database connection.",
+            "dependencies": [
+              4
+            ],
+            "details": "Create `tests/unit/test_smoke.py`. Add a simple async test function that asserts 1 + 1 equals 2, and another test that resolves a simple dependency or queries the DB session to ensure fixtures are wiring up correctly without errors.",
+            "status": "done",
+            "testStrategy": "Run `pytest` and ensure the smoke tests pass and the test database is correctly initialized and torn down.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-25T23:09:50.780Z"
+          }
+        ],
+        "updatedAt": "2026-01-25T23:09:50.780Z"
+      },
+      {
+        "id": "14",
+        "title": "Implement ETL Transaction Safety and Locking",
+        "description": "Enhance the ETL service to prevent race conditions and ensure data integrity during concurrent updates.",
+        "details": "Modify `backend/app/services/etl/service.py`. Implement explicit database transaction blocks (e.g., `async with transaction.atomic()` or SQLAlchemy session usage). Add `SELECT FOR UPDATE` logic when fetching records that will be modified. Introduce an `asyncio.Lock` for in-memory cache updates if applicable. Ensure that simultaneous calls to update the same player data do not result in duplicate entries or partial writes.",
+        "testStrategy": "Create an integration test spawning concurrent ETL tasks targeting the same resource and verify that the final state is consistent and no DB deadlocks occur.",
+        "priority": "high",
+        "dependencies": [
+          "13"
+        ],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Refactor ETL Service for Atomic Transactions",
+            "description": "Establish explicit transaction boundaries within the ETL service methods to ensure atomicity.",
+            "dependencies": [],
+            "details": "Modify `backend/app/services/etl/service.py`. Refactor the main entry points (e.g., `update_all_data`, `refresh_players`) to wrap their logic in a database transaction block (e.g., `async with db.transaction():` or `session.begin()`). Ensure that if an error occurs during the ETL process, all database changes are rolled back to maintain consistency.",
+            "status": "done",
+            "testStrategy": "Unit test verifying that raising an exception inside the transaction block prevents data persistence.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-25T23:40:11.539Z"
+          },
+          {
+            "id": 2,
+            "title": "Implement Row-Level Locking for Updates",
+            "description": "Prevent concurrent modification of the same records by locking rows during fetch.",
+            "dependencies": [
+              1
+            ],
+            "details": "In `backend/app/services/etl/service.py`, identify queries that fetch entities (Players, Teams) for the purpose of updating them. Append `.with_for_update()` (if using SQLAlchemy) or inject `FOR UPDATE` clauses to these queries to lock the selected rows until the transaction commits.",
+            "status": "done",
+            "testStrategy": null,
+            "parentId": "undefined",
+            "updatedAt": "2026-01-25T23:40:11.549Z"
+          },
+          {
+            "id": 3,
+            "title": "Implement Safe Upsert Logic",
+            "description": "Replace check-then-insert logic with atomic upsert operations to handle unique constraints.",
+            "dependencies": [
+              1
+            ],
+            "details": "Refactor the insertion logic in `backend/app/services/etl/service.py`. Instead of checking if a record exists and then inserting, use database-native upsert constructs (e.g., PostgreSQL `INSERT ... ON CONFLICT DO UPDATE`) to prevent `IntegrityError` or duplicates when multiple workers process the same data simultaneously.",
+            "status": "done",
+            "testStrategy": "Unit test ensuring that inserting the same unique key twice updates the existing record rather than failing.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-25T23:40:11.558Z"
+          },
+          {
+            "id": 4,
+            "title": "Add In-Memory Locking for Cache Updates",
+            "description": "Synchronize access to shared in-memory structures within the ETL service instance.",
+            "dependencies": [],
+            "details": "Initialize `self._lock = asyncio.Lock()` in the `ETLService` constructor in `backend/app/services/etl/service.py`. Wrap any modifications to internal state caches (e.g., mapping dictionaries for teams or positions) with `async with self._lock:` to ensure thread safety during concurrent execution.",
+            "status": "done",
+            "testStrategy": null,
+            "parentId": "undefined",
+            "updatedAt": "2026-01-25T23:40:11.566Z"
+          },
+          {
+            "id": 5,
+            "title": "Create Concurrency Integration Tests",
+            "description": "Verify that the ETL service handles concurrent execution without data corruption or deadlocks.",
+            "dependencies": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "details": "Create a new test file `tests/integration/test_etl_concurrency.py`. Implement a test using `asyncio.gather` to launch multiple concurrent calls to the ETL update method for the same player/resource. Assert that the final database state is correct, contains no duplicates, and that no unhandled database lock exceptions occurred.",
+            "status": "done",
+            "testStrategy": "Execute the concurrency test suite against a test database instance.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-25T23:40:11.574Z"
+          }
+        ],
+        "updatedAt": "2026-01-25T23:40:11.574Z"
+      },
+      {
+        "id": "15",
+        "title": "Refactor Feature Engineering for Unit Testability",
+        "description": "Decouple feature engineering logic from the execution engine to allow for pure function unit testing.",
+        "details": "Identify feature calculation logic in `backend/app/services/ml/`. Extract these into pure functions (e.g., `calculate_rolling_average(stats_list) -> float`) that do not depend on DB sessions or external services. Ensure these functions handle edge cases (empty lists, None values).",
+        "testStrategy": "Write unit tests in `tests/unit/test_features.py` covering various input scenarios including boundary values, ensuring 100% coverage for these calculations.",
+        "priority": "medium",
+        "dependencies": [
+          "13"
+        ],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Initialize Pure Calculation Module",
+            "description": "Create a new dedicated module for pure mathematical functions to separate logic from data access.",
+            "dependencies": [],
+            "details": "Create `backend/app/services/ml/calculations.py`. Define the structure for pure functions that accept standard Python types (lists, dicts, floats) or Pydantic models, strictly avoiding SQLAlchemy ORM objects or database sessions as arguments.",
+            "status": "done",
+            "testStrategy": "Verify the module is importable and contains no imports from `sqlalchemy` or the `db` module.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-26T00:27:52.850Z"
+          },
+          {
+            "id": 2,
+            "title": "Refactor Historical and Rolling Metric Logic",
+            "description": "Extract complex time-series logic like rolling averages into the new pure calculation module.",
+            "dependencies": [
+              1
+            ],
+            "details": "Identify logic in `backend/app/services/ml/` responsible for calculating trends (e.g., average points last 5 gameweeks). Move this into `calculations.py` as functions like `calculate_rolling_avg(values: list[float], window: int) -> float`. Implement checks for empty lists.",
+            "status": "done",
+            "testStrategy": "Create unit tests passing list arrays representing match history and verifying correct average calculations.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-26T00:27:52.858Z"
+          },
+          {
+            "id": 3,
+            "title": "Refactor Derived Static Metric Logic",
+            "description": "Extract single-point derived metrics calculation logic into the pure module.",
+            "dependencies": [
+              1
+            ],
+            "details": "Move logic for ratios and standardizations (e.g., `goals_per_90`, `creativity_rank_score`) into `calculations.py`. Ensure functions handle division by zero (e.g., if minutes played is 0) by returning 0.0 or valid defaults.",
+            "status": "done",
+            "testStrategy": "Create unit tests passing specific stat dictionaries to verify correct ratio computations and zero-division handling.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-26T00:27:52.866Z"
+          },
+          {
+            "id": 4,
+            "title": "Update Feature Service Orchestration",
+            "description": "Modify the existing feature service to fetch data first, then call the new pure functions.",
+            "dependencies": [
+              2,
+              3
+            ],
+            "details": "Refactor `backend/app/services/ml/feature_engineering.py` (or equivalent service file). Replace inline math with calls to `calculations.py`. The service should now strictly focus on querying the database and preparing the raw data structures required by the calculation functions.",
+            "status": "done",
+            "testStrategy": "Run integration tests to ensure the full pipeline still produces the expected feature set values when connected to the DB.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-26T00:27:52.875Z"
+          },
+          {
+            "id": 5,
+            "title": "Implement Unit Tests for Calculation Module",
+            "description": "Create a comprehensive unit test suite for the extracted pure functions covering edge cases.",
+            "dependencies": [
+              2,
+              3
+            ],
+            "details": "Create `tests/unit/test_features.py`. Import functions from `backend/app/services/ml/calculations.py`. Write test cases for normal inputs, empty lists, `None` values, and zeros. Ensure 100% code coverage for the calculation logic.",
+            "status": "done",
+            "testStrategy": "Run `pytest tests/unit/test_features.py` and verify all tests pass without requiring a database connection.",
+            "parentId": "undefined",
+            "updatedAt": "2026-01-26T00:27:52.881Z"
+          }
+        ],
+        "updatedAt": "2026-01-26T00:27:52.881Z"
+      },
+      {
+        "id": "16",
+        "title": "Implement ML Model Functional Validation (Smoke Test)",
+        "description": "Add a verification layer to ensure loaded ML models produce non-zero, valid predictions before serving traffic.",
+        "details": "Update `backend/app/services/ml/engine.py`. Create a `validate_models_loaded()` function. Upon application startup or model load, run a dummy prediction with mock input data. If the result is `0.0`, `NaN`, or an error occurs, raise a critical `ModelError` and prevent the service from reporting 'healthy'.",
+        "testStrategy": "Unit test the loader with a mock model that returns 0.0 to ensure the exception is raised. Integration test the startup sequence to verify it fails fast on bad models.",
+        "priority": "high",
+        "dependencies": [
+          "15"
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Define ModelError Exception Class",
+            "description": "Create a specific exception class to handle model validation failures.",
+            "dependencies": [],
+            "details": "Create or update `backend/app/core/exceptions.py` (or define within `backend/app/services/ml/errors.py` if it exists) to include a `ModelError` class. This exception should be used specifically when ML models fail functional validation tests (e.g., producing NaN or zero output on test vectors).",
+            "status": "pending",
+            "testStrategy": "Verify the exception can be imported and raised.",
             "parentId": "undefined"
           },
           {
             "id": 2,
-            "title": "Create Core Reference Tables",
-            "description": "Define the schema for teams and players tables with necessary relational constraints and position validation.",
+            "title": "Create Mock Prediction Data Generators",
+            "description": "Implement utility functions to generate schema-compliant mock input data for model testing.",
             "dependencies": [
               1
             ],
-            "details": "Create 'teams' and 'players' tables. Implement a CHECK constraint on the players table to restrict positions to ('GK', 'DEF', 'MID', 'FWD').",
-            "status": "done",
-            "testStrategy": "Attempt to insert a player with an invalid position like 'ST' and verify the database rejects the transaction.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-18T22:45:01.130Z"
+            "details": "In `backend/app/services/ml/engine.py`, implement a helper function `_get_smoke_test_input()` that returns a pandas DataFrame or dictionary matching the exact feature schema required by the ML model. Ensure the data types (float, int, category) match what the model expects to prevent TypeErrors during the smoke test.",
+            "status": "pending",
+            "testStrategy": "Unit test the helper function to ensure it returns a valid data structure with the correct shape and columns.",
+            "parentId": "undefined"
           },
           {
             "id": 3,
-            "title": "Define Statistics Tables Schema",
-            "description": "Create the table structures for player_stats and team_stats to store granular performance data over time.",
+            "title": "Implement validate_models_loaded Function",
+            "description": "Add the core validation logic to the ML engine to test models against mock data.",
             "dependencies": [
               2
             ],
-            "details": "Define columns for player_id/team_id, gameweek, season, and a timestamp column. Include metrics like xG, xA, and points as specified in the PRD.",
-            "status": "done",
-            "testStrategy": "Use the '\\d player_stats' command in psql to verify all columns and data types match the technical specification.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-18T22:58:50.298Z"
+            "details": "Update `backend/app/services/ml/engine.py` to include `validate_models_loaded(model_artifact)`. This function should invoke `model.predict()` using the mock input from the previous subtask. It must check if the output is `NaN`, `Inf`, `0.0` (if 0.0 is invalid for the context), or raises an exception. If invalid, raise `ModelError`.",
+            "status": "pending",
+            "testStrategy": "Unit test with a mocked model object: one that returns valid data (pass), one that returns NaN (fail), and one that returns 0.0 (fail).",
+            "parentId": "undefined"
           },
           {
             "id": 4,
-            "title": "Configure TimescaleDB Hypertables",
-            "description": "Convert the standard statistics tables into TimescaleDB hypertables partitioned by the timestamp column.",
+            "title": "Integrate Validation into Model Loading Lifecycle",
+            "description": "Ensure the validation runs automatically immediately after a model is loaded into memory.",
             "dependencies": [
               3
             ],
-            "details": "Execute 'SELECT create_hypertable('player_stats', 'timestamp');' and 'SELECT create_hypertable('team_stats', 'timestamp');' to optimize time-series queries.",
-            "status": "done",
-            "testStrategy": "Query 'SELECT * FROM timescaledb_information.hypertables;' to confirm both tables are correctly registered as hypertables.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-18T23:05:26.283Z"
+            "details": "Modify the `load_model` (or equivalent initialization) method in `backend/app/services/ml/engine.py`. Immediately after `joblib.load()` or `pickle.load()`, call `self.validate_models_loaded(loaded_model)`. If validation fails, log a critical error and abort the assignment of the model to the active service instance.",
+            "status": "pending",
+            "testStrategy": "Integration test: Attempt to initialize the ML service with a 'corrupt' model file (or mocked loader) and verify the service fails to start up or reports an error state.",
+            "parentId": "undefined"
           },
           {
             "id": 5,
-            "title": "Implement Unique Indexes and Integrity Constraints",
-            "description": "Add unique indexes to prevent duplicate entries for the same player or team within a specific gameweek and season.",
+            "title": "Update Health Check Endpoint to Reflect Model Status",
+            "description": "Connect the ML model status to the application's health reporting mechanism.",
             "dependencies": [
               4
             ],
-            "details": "Create a UNIQUE index on (player_id, gameweek, season) for the player_stats table and (team_id, gameweek, season) for the team_stats table. Note: Due to TimescaleDB limitations requiring unique constraints to include the partitioning column (timestamp), we implemented trigger-based uniqueness enforcement along with lookup indexes for performance.",
-            "status": "done",
-            "testStrategy": "Attempt to insert two records for the same player_id, gameweek, and season, then verify that the second insert fails with a unique constraint violation.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-18T23:13:00.529Z"
+            "details": "Update the health check endpoint (likely in `backend/app/api/routes/health.py` or similar) and the ML service state. Ensure that if the model failed validation during startup, the readiness probe returns 503 Service Unavailable instead of 200 OK. Add a flag `self.is_ready` in the ML service that is only set to True after successful validation.",
+            "status": "pending",
+            "testStrategy": "Request the health endpoint before model load (should be not ready), after successful load (ready), and after failed load (not ready).",
+            "parentId": "undefined"
           }
-        ],
-        "updatedAt": "2026-01-18T23:05:26.283Z"
+        ]
       },
       {
-        "id": "2",
-        "title": "FPL API Client Implementation",
-        "description": "Develop a Python client to ingest data from the official FPL RESTful API with rate limiting and caching.",
-        "details": "Implement a class using `httpx` or `requests`. Endpoints: `bootstrap-static`, `element-summary/{id}`, and `fixtures`. Implement 'DefCon' rate limiting: use a decorator with exponential backoff. Cache `bootstrap-static` for 24h and `element-summary` for 1h using Redis or local memory.",
-        "testStrategy": "Unit test the client with `pytest-mock` to simulate API responses. Validate that the rate limiter triggers after 60 requests/minute.",
-        "priority": "high",
-        "dependencies": [
-          "1"
-        ],
-        "status": "done",
-        "subtasks": [],
-        "updatedAt": "2026-01-18T23:20:00.000Z"
-      },
-      {
-        "id": "3",
-        "title": "Entity Resolution Engine",
-        "description": "Create a mapping system to resolve player naming discrepancies across FPL, Understat, and FBref.",
-        "details": "Implement a fuzzy matching algorithm using `RapidFuzz` or `Levenshtein`. Store results in the `entity_mappings` table. Create a manual override utility for low-confidence matches (score < 0.85). Schema: `{fpl_id, understat_name, fbref_name, canonical_name}`.",
-        "testStrategy": "Run matching on a known list of players with variations (e.g., 'Bruno Fernandes' vs 'Bruno Borges Fernandes') and verify the mapping accuracy.",
-        "priority": "high",
-        "dependencies": [
-          "1"
-        ],
-        "status": "done",
-        "subtasks": [
-          {
-            "id": 1,
-            "title": "Install and Configure Fuzzy Matching Library",
-            "description": "Add RapidFuzz or enhance Levenshtein usage for improved fuzzy matching performance.",
-            "dependencies": [],
-            "details": "Install `rapidfuzz` package or enhance existing `python-Levenshtein` usage. RapidFuzz is faster and more accurate than SequenceMatcher. Update requirements.txt and create a fuzzy matching utility module.",
-            "status": "done",
-            "testStrategy": "Verify library import and basic fuzzy matching test: match 'Bruno Fernandes' to 'Bruno Borges Fernandes' with score > 0.85.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-19T00:00:00.000Z"
-          },
-          {
-            "id": 2,
-            "title": "Implement Database Persistence Layer",
-            "description": "Create service methods to save and retrieve entity mappings from the `entity_mappings` database table.",
-            "dependencies": [
-              1
-            ],
-            "details": "Implement methods to upsert mappings to `entity_mappings` table using SQLAlchemy. Handle schema: `fpl_id`, `understat_name`, `fbref_name`, `canonical_name`, `confidence_score`, `manually_verified`. Include methods for querying existing mappings.",
-            "status": "done",
-            "testStrategy": "Insert a test mapping and verify it appears in the database. Query by fpl_id and verify all fields are correct.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-19T00:00:00.000Z"
-          },
-          {
-            "id": 3,
-            "title": "Enhance Fuzzy Matching Algorithm",
-            "description": "Replace SequenceMatcher with RapidFuzz/Levenshtein and implement multi-source matching logic.",
-            "dependencies": [
-              1
-            ],
-            "details": "Update `fuzzy_match` method to use RapidFuzz's `fuzz.ratio()` or `Levenshtein.distance()`. Implement matching against Understat and FBref name lists. Return confidence scores (0.0-1.0) for each match. Use threshold of 0.85 for high-confidence matches.\n<info added on 2026-01-20T14:25:32.709Z>\nImplemented fuzzy_match_multi_source method using RapidFuzz WRatio for improved accuracy. The algorithm matches against Understat and FBref name lists separately, returning source-specific results and selecting the best match. Updated resolve_player_entity to utilize a 0.85 threshold for high-confidence matches with a fallback to general fuzzy matching. All confidence scores are provided on a 0.0-1.0 scale. Verified the implementation via test_multi_source_fuzzy_matching.py focusing on Mohamed Salah name variations.\n</info added on 2026-01-20T14:25:32.709Z>",
-            "status": "done",
-            "testStrategy": "Test matching 'Mohamed Salah' against variations like 'Mo Salah', 'Mohamed Salah Ghaly'. Verify confidence scores are accurate and > 0.85 for good matches.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T14:33:41.244Z"
-          },
-          {
-            "id": 4,
-            "title": "Implement Canonical Name Generation",
-            "description": "Create logic to generate canonical names from resolved entity mappings.",
-            "dependencies": [
-              2,
-              3
-            ],
-            "details": "Implement `generate_canonical_name()` method that creates a standardized name from FPL, Understat, and FBref names. Prefer FPL name, fallback to most common name, handle special characters and accents. Store canonical name in database.",
-            "status": "done",
-            "testStrategy": "Generate canonical names for players with name variations. Verify consistency: same player always gets same canonical name regardless of source.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T15:00:21.849Z"
-          },
-          {
-            "id": 5,
-            "title": "Create Manual Override Utility",
-            "description": "Build utility functions and API endpoints for manually overriding low-confidence matches (score < 0.85).",
-            "dependencies": [
-              2,
-              3,
-              4
-            ],
-            "details": "Create `override_mapping()` method that allows manual correction of mappings. Mark as `manually_verified=True` and update confidence_score to 1.0. Create FastAPI endpoint `/api/entity-resolution/override` for manual corrections. Include validation to prevent duplicate mappings.",
-            "status": "done",
-            "testStrategy": "Manually override a low-confidence match (< 0.85). Verify it's saved with `manually_verified=True` and `confidence_score=1.0`. Test that subsequent queries return the manual override.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T15:02:43.429Z"
-          },
-          {
-            "id": 6,
-            "title": "Implement Bulk Resolution and Testing",
-            "description": "Create bulk resolution functionality and test suite for entity resolution accuracy.",
-            "dependencies": [
-              2,
-              3,
-              4,
-              5
-            ],
-            "details": "Create `resolve_all_players()` method that processes all FPL players and stores mappings. Create test suite with known player name variations (e.g., 'Bruno Fernandes' vs 'Bruno Borges Fernandes'). Generate report of match accuracy, low-confidence matches, and unmatched players.\n<info added on 2026-01-20T15:12:21.128Z>\nImplemented the resolve_all_players() method to process FPL bootstrap data, resolve entity mappings, and store results in the database using upsert_mapping(). The method generates a comprehensive report including total players processed, match/unmatch counts, high vs. low-confidence statistics, and match accuracy percentages. Defined the BulkResolutionReport schema and created a FastAPI endpoint at /api/entity-resolution/resolve-all that supports bulk processing with an optional store_mappings parameter. Developed the test_bulk_resolution.py suite to verify match accuracy, ensure low-confidence matches (score < 0.85) are flagged for review, and confirm successful database storage.\n</info added on 2026-01-20T15:12:21.128Z>",
-            "status": "done",
-            "testStrategy": "Run bulk resolution on current FPL player list. Verify >90% match rate for players with data in all sources. Check that low-confidence matches (< 0.85) are flagged for manual review.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T15:12:21.669Z"
-          }
-        ],
-        "updatedAt": "2026-01-20T15:12:21.669Z"
-      },
-      {
-        "id": "4",
-        "title": "Phase 0: Basic Feature Engineering & Baseline Model",
-        "description": "Develop simple features and a baseline XGBoost model to predict total points for the MVP.",
-        "details": "Calculate 'Form' (avg points last 5 games) and 'FDR' (FPL strength ratings). Train an `XGBoostRegressor` on `player_stats`. Implement an Expanding Window validation: train on GW1-N, test on GW N+1. Store model metadata in `model_versions` table.",
-        "testStrategy": "Evaluate model using RMSE. Ensure no future data leaks into the training set by checking timestamps during the expanding window split.",
+        "id": "17",
+        "title": "Decouple Solver Constraints for Isolated Testing",
+        "description": "Extract constraint logic from the main solver class to allow independent verification of optimization rules.",
+        "details": "Refactor the solver (likely `backend/app/services/team_optimizer.py` or similar). Move constraints like 'budget limit', 'max players per team', and 'position limits' into separate validator functions or a `ConstraintFactory`. This allows testing constraints without running the full heavy ILP solver.",
+        "testStrategy": "Unit tests verifying that specific invalid team compositions correctly trigger constraint violations.",
         "priority": "medium",
         "dependencies": [
-          "2"
+          "13"
         ],
-        "status": "done",
+        "status": "pending",
         "subtasks": [
           {
             "id": 1,
-            "title": "Implement Basic Feature Engineering (Form and FDR)",
-            "description": "Calculate rolling average points for the last 5 games and integrate FPL strength ratings.",
+            "title": "Analyze and Map Existing Solver Constraints",
+            "description": "Review the optimization service to identify all hard-coded constraints currently implemented within the main solve method.",
             "dependencies": [],
-            "details": "Create a function to compute 'Form' using a rolling window of 5 gameweeks on player_stats. Map 'FDR' (Fixture Difficulty Rating) from the fixtures data to each player's upcoming matches.",
-            "status": "done",
-            "testStrategy": "Unit test to verify 'Form' calculation matches manual average of last 5 GWs for a sample player.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:24:08.633Z"
+            "details": "Examine `backend/app/services/team_optimizer.py` (or the equivalent file found via analysis). List all PuLP constraints such as budget limits, squad size (15 players), position counts (2 GKP, 5 DEF, etc.), and team-specific limits (max 3 players per club). Document the input variables required for each.",
+            "status": "pending",
+            "testStrategy": null,
+            "parentId": "undefined"
           },
           {
             "id": 2,
-            "title": "Implement Expanding Window Validation Split",
-            "description": "Create a data splitting utility that respects the temporal nature of FPL data.",
+            "title": "Create ConstraintFactory Interface and Base Class",
+            "description": "Establish a new module structure to house the decoupled constraint logic.",
             "dependencies": [
               1
             ],
-            "details": "Implement logic to split data into training (GW 1 to N) and testing (GW N+1) sets. Ensure no data leakage by strictly partitioning based on Gameweek IDs and timestamps.",
-            "status": "done",
-            "testStrategy": "Verify that the max GW in the training set is strictly less than the GW in the test set for every fold.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:24:08.642Z"
+            "details": "Create a new file `backend/app/services/optimization/constraints.py`. Define an abstract base class or interface for constraints that accepts the PuLP problem instance and the decision variables dictionary. This standardizes how constraints are applied to the linear programming problem.",
+            "status": "pending",
+            "testStrategy": "Unit test to verify the interface can be instantiated or mocked.",
+            "parentId": "undefined"
           },
           {
             "id": 3,
-            "title": "Train Baseline XGBoost Regressor",
-            "description": "Set up and train an XGBoost model to predict total points.",
+            "title": "Implement Individual Constraint Classes",
+            "description": "Move the logic for specific constraints into separate classes implementing the new interface.",
             "dependencies": [
               2
             ],
-            "details": "Initialize XGBoostRegressor with default hyperparameters. Train the model on the engineered features (Form, FDR, etc.) using the training splits generated in the previous step.",
-            "status": "done",
-            "testStrategy": "Check that the model object is successfully created and the fit method completes without errors.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:24:08.654Z"
+            "details": "Refactor logic for `BudgetConstraint`, `SquadSizeConstraint`, `PositionLimitConstraint`, and `TeamLimitConstraint` into their own classes in the new module. Each class should have an `apply(problem, lp_variables, data)` method. Ensure pure logic is separated so it can be tested without the solver where possible.",
+            "status": "pending",
+            "testStrategy": "Unit tests for each constraint class verifying they add the correct number of rows to a mock PuLP problem.",
+            "parentId": "undefined"
           },
           {
             "id": 4,
-            "title": "Evaluate Model Performance with RMSE",
-            "description": "Calculate Root Mean Squared Error for the baseline model across validation windows.",
+            "title": "Refactor Main Solver to Use ConstraintFactory",
+            "description": "Update the main optimizer service to use the new constraint classes instead of inline logic.",
             "dependencies": [
               3
             ],
-            "details": "Use the test sets from the expanding window split to generate predictions. Calculate RMSE for each window and compute the global average to establish a performance baseline.",
-            "status": "done",
-            "testStrategy": "Compare RMSE against a naive baseline (e.g., predicting the mean) to ensure the model provides signal.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:24:08.664Z"
+            "details": "Modify `TeamOptimizer` to instantiate and iterate through the constraint classes. Remove the old inline constraint code. Inject the configuration (e.g., max budget, max players) into these classes rather than hardcoding them in the solver method.",
+            "status": "pending",
+            "testStrategy": "Integration test running the full solver to ensure it still produces valid teams with the refactored code.",
+            "parentId": "undefined"
           },
           {
             "id": 5,
-            "title": "Store Model Metadata in Database",
-            "description": "Persist model versions and performance metrics to the model_versions table.",
+            "title": "Add Validation Tests for Isolated Constraints",
+            "description": "Create a suite of unit tests that specifically verify constraint logic independently of the solver engine.",
             "dependencies": [
               4
             ],
-            "details": "Define a schema for model_versions. Insert records containing the model ID, timestamp, hyperparameters used, and the resulting RMSE from the evaluation phase.",
-            "status": "done",
-            "testStrategy": "Query the model_versions table after a training run to confirm all metadata fields are correctly populated.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:24:08.670Z"
+            "details": "Create `tests/unit/test_constraints.py`. detailed tests where we pass specific sets of dummy players and variables to the constraint classes and assert that the mathematical expressions generated match expected inequalities (e.g., sum of costs <= 1000).",
+            "status": "pending",
+            "testStrategy": "Pytest execution of the new unit test file.",
+            "parentId": "undefined"
           }
-        ],
-        "complexity": 5,
-        "recommendedSubtasks": 0,
-        "expansionPrompt": "No expansion needed as the current subtasks already cover the feature engineering, temporal validation, model training, evaluation, and persistence requirements.",
-        "updatedAt": "2026-01-20T18:24:08.670Z"
+        ]
       },
       {
-        "id": "5",
-        "title": "Single-Gameweek ILP Optimization Engine",
-        "description": "Implement the core optimization logic for a single gameweek using Integer Linear Programming.",
-        "details": "Use `PuLP` with the `HiGHS` solver. Objective: Maximize `sum(xP[i] * x[i])`. Constraints: Total cost <= 100, max 3 players per team, exactly 2 GK, 5 DEF, 5 MID, 3 FWD. Decision variable `x[i]` is binary (1 if in squad).",
-        "testStrategy": "Run the solver and verify the output squad contains exactly 15 players, adheres to the 100M budget, and respects the 3-player-per-team limit.",
+        "id": "18",
+        "title": "Harden Solver with Timeouts and Error Handling",
+        "description": "Configure the PuLP solver to handle large problem instances gracefully by enforcing time limits.",
+        "details": "In the Team Optimization service, configure the solver (e.g., `prob.solve(PULP_CBC_CMD(timeLimit=30))`). Wrap the solve execution in a try-except block to catch `PulpSolverError` or timeout exceptions. Return a structured error response instead of hanging indefinitely if the solution isn't found within 30 seconds.",
+        "testStrategy": "Performance test using a mock large dataset or artificially restricted time limit (e.g., 0.01s) to ensure the timeout logic triggers and returns the correct error object.",
         "priority": "high",
         "dependencies": [
-          "4"
+          "17"
         ],
-        "status": "done",
+        "status": "pending",
         "subtasks": [
           {
             "id": 1,
-            "title": "Initialize PuLP Model and Binary Decision Variables",
-            "description": "Set up the PuLP maximization problem and create binary variables for each player in the dataset.",
+            "title": "Define Solver-Specific Custom Exceptions",
+            "description": "Create a dedicated exception hierarchy for the optimization solver to handle specific failure scenarios distinct from general application errors.",
             "dependencies": [],
-            "details": "Define LpProblem with LpMaximize. Create a dictionary of LpVariable with cat='Binary' indexed by player IDs from the input dataframe.",
-            "status": "done",
-            "testStrategy": "Assert that the number of variables matches the number of players in the input dataframe.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:27:12.557Z"
+            "details": "Create or update `backend/app/core/exceptions.py` (or a new `solver_exceptions.py`) to include `SolverTimeoutError`, `SolverInfeasibleError`, and `SolverExecutionError`. Ensure these inherit from a base `AppException` so they can be caught by the global exception handler later.",
+            "status": "pending",
+            "testStrategy": "Verify that new exceptions can be instantiated and caught within a basic try-except block.",
+            "parentId": "undefined"
           },
           {
             "id": 2,
-            "title": "Implement Position and Budget Constraints",
-            "description": "Add linear constraints to ensure the squad meets FPL position requirements and stays within the 100M budget.",
+            "title": "Configure PuLP Solver with Time Limits",
+            "description": "Modify the solver initialization to accept and enforce a strict execution time limit.",
             "dependencies": [
               1
             ],
-            "details": "Add constraints for 2 GK, 5 DEF, 5 MID, 3 FWD using player position flags. Add budget constraint: lpSum(cost[i] * x[i]) <= 100.",
-            "status": "done",
-            "testStrategy": "Verify that a mock dataset with high costs or wrong positions returns an infeasible status or correct counts.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:30:56.522Z"
+            "details": "In the team optimization service (e.g., `backend/app/services/team_optimizer.py`), update the `prob.solve()` call. Instead of the default solver, instantiate `PULP_CBC_CMD` (or the configured solver) with `timeLimit=30` (seconds) and `msg=0` (to reduce log noise). Make the timeout value configurable via environment variables or settings.",
+            "status": "pending",
+            "testStrategy": "Run the solver with a very short timeout (e.g., 0.01s) on a standard problem to confirm it respects the configuration parameters.",
+            "parentId": "undefined"
           },
           {
             "id": 3,
-            "title": "Implement Team-Limit Constraints and Objective Function",
-            "description": "Add constraints to limit players from the same team and define the total expected points objective.",
+            "title": "Implement Wrapper for Solver Execution",
+            "description": "Wrap the core solving logic in a robust error-handling block to manage runtime failures.",
+            "dependencies": [
+              2
+            ],
+            "details": "Refactor the solve method to wrap `prob.solve()` in a `try...except` block. Catch `PulpSolverError` and generic `Exception`, logging the specific error details, and raising `SolverExecutionError`. Ensure the system does not crash on internal solver failures.",
+            "status": "pending",
+            "testStrategy": "Mock the `prob.solve` method to raise a `PulpSolverError` and verify that `SolverExecutionError` is raised with appropriate logs.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 4,
+            "title": "Validate Solver Status and Handle Non-Optimal Results",
+            "description": "Explicitly check the solution status code returned by PuLP and handle non-optimal states gracefully.",
+            "dependencies": [
+              2,
+              3
+            ],
+            "details": "After `prob.solve()`, check `LpStatus[prob.status]`. If the status is not 'Optimal': \n1. If 'Not Solved' or time limit reached, raise `SolverTimeoutError`.\n2. If 'Infeasible', raise `SolverInfeasibleError`.\nEnsure specific error messages help debug why a solution wasn't found (e.g., 'Constraints too strict').",
+            "status": "pending",
+            "testStrategy": "Create a test case with impossible constraints (e.g., cost < 0) and verify that `SolverInfeasibleError` is raised.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 5,
+            "title": "Integrate Error Responses in API Layer",
+            "description": "Ensure the API endpoint calling the solver translates solver exceptions into appropriate HTTP responses.",
+            "dependencies": [
+              4
+            ],
+            "details": "In the API router (e.g., `backend/app/api/endpoints/optimization.py`), ensure the endpoint catches `SolverTimeoutError` (return HTTP 408), `SolverInfeasibleError` (return HTTP 422), and `SolverExecutionError` (return HTTP 500). Return a structured JSON error response.",
+            "status": "pending",
+            "testStrategy": "Integration test: Call the API endpoint with parameters triggering a timeout and infeasibility to verify the HTTP status codes and error messages.",
+            "parentId": "undefined"
+          }
+        ]
+      },
+      {
+        "id": "19",
+        "title": "Implement Property-Based Testing for Solver",
+        "description": "Use Hypothesis to strictly verify that generated solutions always satisfy critical constraints.",
+        "details": "Create `tests/unit/test_solver_properties.py`. Define strategies using `hypothesis` to generate random player sets, budgets, and constraints. Assert that for every valid solution returned by the solver, the total cost <= budget, squad size == 15, etc. This mitigates the risk of non-deterministic or invalid solutions.",
+        "testStrategy": "Run the property-based test suite. It should generate hundreds of scenarios automatically to find edge cases where constraints might be violated.",
+        "priority": "medium",
+        "dependencies": [
+          "17",
+          "18"
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Setup Hypothesis and Test Scaffold",
+            "description": "Install the Hypothesis library and initialize the test file for property-based testing.",
+            "dependencies": [],
+            "details": "Add 'hypothesis' to the project's test dependencies (e.g., requirements.txt or poetry). Create a new file 'tests/unit/test_solver_properties.py' and import necessary modules including 'hypothesis', 'hypothesis.strategies', and the solver service.",
+            "status": "pending",
+            "testStrategy": "Verify that 'pytest tests/unit/test_solver_properties.py' runs without import errors.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 2,
+            "title": "Define Player Data Generation Strategies",
+            "description": "Create Hypothesis strategies to generate synthetic lists of FPL players with valid attributes.",
+            "dependencies": [
+              1
+            ],
+            "details": "In 'test_solver_properties.py', define a composite strategy using 'st.builds' or dictionaries to generate 'Player' objects. Ensure valid ranges for 'now_cost' (e.g., 35-140), 'element_type' (1-4 for GKP, DEF, MID, FWD), and 'team' (1-20). Ensure the generated list has enough players to form a valid squad.",
+            "status": "pending",
+            "testStrategy": "Write a temporary test that generates a sample list of players and asserts that attribute types and ranges are correct.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 3,
+            "title": "Define Budget and Constraint Strategies",
+            "description": "Create strategies for variable input parameters such as total budget and team limits.",
+            "dependencies": [
+              1
+            ],
+            "details": "Define strategies for the budget parameter (e.g., 'st.integers(min_value=800, max_value=1050)') and max players per team constraints. This ensures the solver is tested against tight, loose, and standard budgetary constraints.",
+            "status": "pending",
+            "testStrategy": "Verify that the strategies produce values within the expected boundaries when sampled.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 4,
+            "title": "Implement Financial and Size Property Tests",
+            "description": "Write property tests to verify that solutions never exceed the budget and always return the correct squad size.",
+            "dependencies": [
+              2,
+              3
+            ],
+            "details": "Use '@given(players=..., budget=...)' to drive the solver. Assert that if a valid solution is returned: 1) The sum of selected players' costs is less than or equal to the provided budget. 2) The total number of selected players is exactly 15 (or the configured squad size).",
+            "status": "pending",
+            "testStrategy": "Run the test suite. It should pass for valid logic and fail if the solver allows overspending.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 5,
+            "title": "Implement Compositional Rule Property Tests",
+            "description": "Write property tests to verify positional requirements and team limits.",
+            "dependencies": [
+              2,
+              3
+            ],
+            "details": "Extend the assertions to check detailed rules: 1) Position counts must match standard FPL rules (2 GKP, 5 DEF, 5 MID, 3 FWD). 2) No single team has more than the allowed limit (usually 3) of players in the solution. 3) All selected players are unique.",
+            "status": "pending",
+            "testStrategy": "Run the full property-based suite to ensure thousands of random scenarios adhere to strict formation rules.",
+            "parentId": "undefined"
+          }
+        ]
+      },
+      {
+        "id": "20",
+        "title": "Enhance Health Check Endpoints",
+        "description": "Expand the health API to check DB connectivity, ML model status, and memory usage.",
+        "details": "Update `backend/app/api/health.py`. Add checks for: 1. Database `SELECT 1`. 2. ML Engine status (verify `validate_models_loaded` passed). 3. System memory usage (optional, using `psutil`). Return a composite JSON status `{ 'status': 'ok', 'components': { 'db': 'up', 'ml': 'up' } }`. Ensure 503 status code if critical components are down.",
+        "testStrategy": "Integration test: Simulate a DB downtime (e.g., close connection) and verify `/health` returns 503 and the specific component error.",
+        "priority": "medium",
+        "dependencies": [
+          "14",
+          "16"
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Add dependencies and prepare health module structure",
+            "description": "Ensure psutil is available and structure the health endpoint file to support modular checks.",
+            "dependencies": [],
+            "details": "Check `backend/requirements.txt` (or equivalent) for `psutil` and add it if missing. Review `backend/app/api/health.py` and prepare imports for the Database session factory and the ML Engine service to be used in subsequent steps.",
+            "status": "pending",
+            "testStrategy": "Verify that `import psutil` works in the backend environment without errors.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 2,
+            "title": "Implement Database connectivity check logic",
+            "description": "Create a function to verify database availability by executing a lightweight query.",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement an async function (e.g., `check_db_health`) in `backend/app/api/health.py`. It should acquire a DB session and execute `SELECT 1`. If successful, return status 'up'; catch exceptions (e.g., `SQLAlchemyError`) to return 'down' and log the error.",
+            "status": "pending",
+            "testStrategy": "Unit test mocking the DB session to simulate both successful connection and connection failure (raising an exception).",
+            "parentId": "undefined"
+          },
+          {
+            "id": 3,
+            "title": "Implement ML Engine status check logic",
+            "description": "Create a function to verify that the Machine Learning models are loaded and ready.",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement a function (e.g., `check_ml_health`) that interfaces with the ML service. It should call `validate_models_loaded` or check the singleton's initialization state. Return 'up' if models are ready, 'down' otherwise.",
+            "status": "pending",
+            "testStrategy": "Unit test mocking the ML service to return True/False for model readiness and verifying the output status string.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 4,
+            "title": "Implement System Resource monitoring logic",
+            "description": "Create a function to retrieve current system memory usage metrics using psutil.",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement `check_system_health` using `psutil.virtual_memory()`. Return a dictionary containing memory usage details (e.g., percent used). This component is considered optional/informational and should not trigger a 503 unless critical thresholds are defined.",
+            "status": "pending",
+            "testStrategy": "Unit test verifying that the function returns a dictionary with valid 'memory_usage' keys.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 5,
+            "title": "Aggregate checks into Health API response",
+            "description": "Combine DB, ML, and System checks into the final endpoint and handle HTTP status codes.",
+            "dependencies": [
+              2,
+              3,
+              4
+            ],
+            "details": "Update the GET route in `backend/app/api/health.py` to await all check functions. Construct the composite JSON `{ 'status': 'ok'|'error', 'components': { 'db': ..., 'ml': ... } }`. Logic: If 'db' or 'ml' is 'down', set the HTTP response status code to 503 Service Unavailable.",
+            "status": "pending",
+            "testStrategy": "Integration test: Simulate DB down (503), ML down (503), and all systems nominal (200). Verify JSON structure matches requirements.",
+            "parentId": "undefined"
+          }
+        ]
+      },
+      {
+        "id": "21",
+        "title": "Standardize Exception Handling",
+        "description": "Implement a centralized exception handling mechanism to prevent silent failures and ensure consistent API errors.",
+        "details": "Create a custom exception hierarchy (base `AppException`). Implement an exception handler in the API framework (e.g., FastAPI `@app.exception_handler`). Ensure exceptions from ETL, Solver, and ML components map to appropriate HTTP status codes (e.g., SolverTimeout -> 408, ModelError -> 503).",
+        "testStrategy": "Unit test the exception handler. Trigger various internal exceptions via an endpoint and verify the JSON response structure and HTTP status codes.",
+        "priority": "medium",
+        "dependencies": [
+          "13"
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Define Base Exception Hierarchy",
+            "description": "Create a unified base exception class and specific subclasses for the application domain.",
+            "dependencies": [],
+            "details": "Create a new module `backend/app/core/exceptions.py`. Define a base class `AppException(Exception)` that includes fields for `message`, `error_code`, and `status_code`. Derive specific exceptions like `ResourceNotFound`, `ValidationError`, `AuthenticationError`, `ETLError`, `SolverError`, and `ModelPredictionError` from this base class to cover the ETL, Solver, and ML domains.",
+            "status": "pending",
+            "testStrategy": "Unit tests ensuring custom exceptions can be instantiated with correct default codes and messages.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 2,
+            "title": "Implement Global Exception Handlers",
+            "description": "Register global exception handlers in the FastAPI application to intercept custom exceptions.",
+            "dependencies": [
+              1
+            ],
+            "details": "In `backend/app/main.py` (or a dedicated `backend/app/core/errors.py` if modular), create functions decorated with `@app.exception_handler(AppException)`. The handler should extract the status code and error details from the exception and return a standardized `JSONResponse` with a consistent schema (e.g., `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`). Also add a catch-all handler for unhandled `Exception` cases to return a 500 Internal Server Error.",
+            "status": "pending",
+            "testStrategy": "Unit test the handler functions directly. Mock the app context to verify the response format.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 3,
+            "title": "Refactor ETL Service Exception Handling",
+            "description": "Update the ETL service to use the new exception hierarchy.",
             "dependencies": [
               1,
               2
             ],
-            "details": "For each team, add lpSum(x[i]) <= 3. Set the objective function to lpSum(xP[i] * x[i]) where xP is the predicted points for the gameweek.",
-            "status": "done",
-            "testStrategy": "Check if the model correctly limits players from a single dominant team to exactly 3 in the solution.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:37:16.536Z"
+            "details": "Review `backend/app/services/etl/service.py` and related files. Replace generic `raise Exception` or `HTTPException` calls with specific exceptions like `ETLError` or `ResourceNotFound`. Ensure that upstream API failures or database integrity errors during ETL processes are caught and re-raised as domain-specific exceptions.",
+            "status": "pending",
+            "testStrategy": "Integration tests triggering ETL failures (e.g., external API down) and asserting the API returns the correct mapped HTTP status code (e.g., 502 or 503).",
+            "parentId": "undefined"
           },
           {
             "id": 4,
-            "title": "Integrate HiGHS Solver and Result Extraction",
-            "description": "Configure the HiGHS solver, execute the optimization, and parse the binary results into a readable squad format.",
+            "title": "Refactor Solver and ML Service Exception Handling",
+            "description": "Update Solver and ML components to raise standardized exceptions.",
             "dependencies": [
-              3
-            ],
-            "details": "Configure the HiGHS solver via PuLP. Execute the optimization and extract players where the decision variable equals 1.0 into a final list.",
-            "status": "done",
-            "testStrategy": "Run the full pipeline on a sample dataset and validate that the output is a valid 15-man squad.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:37:49.069Z"
-          }
-        ],
-        "complexity": 6,
-        "recommendedSubtasks": 4,
-        "expansionPrompt": "Break down the implementation of the PuLP optimization model, focusing on objective function definition, position constraints, team-limit constraints, and solver integration.",
-        "updatedAt": "2026-01-20T18:37:49.069Z"
-      },
-      {
-        "id": "6",
-        "title": "External Data Integration & Advanced Features",
-        "description": "Integrate Understat and FBref data and implement Bayesian Optimization for feature decay.",
-        "details": "Scrape Understat for xG/xA and FBref for possession/defensive metrics. Use `scikit-optimize` for Dynamic Decay Optimization to find the optimal alpha (α) for form calculations. Implement Poisson Regression for FDR 2.0 (Stochastic Fixture Difficulty).",
-        "testStrategy": "Verify that xG/xA data is correctly joined with FPL player IDs via the Entity Resolution Engine. Check that α values converge during Bayesian optimization.",
-        "priority": "medium",
-        "dependencies": [
-          "3",
-          "4"
-        ],
-        "status": "done",
-        "subtasks": [
-          {
-            "id": 1,
-            "title": "Develop Scrapers for Understat and FBref",
-            "description": "Build automated scrapers to extract xG, xA from Understat and possession/defensive metrics from FBref.",
-            "dependencies": [],
-            "details": "Utilize BeautifulSoup or Scrapy to fetch and parse HTML from Understat and FBref. Ensure the data is cleaned and structured for the Entity Resolution Engine.\n<info added on 2026-01-20T18:42:00.976Z>\nCompleted scraper improvements for Understat and FBref. The Understat scraper now utilizes regex for JavaScript data extraction, includes robust error handling, and employs safe_int and safe_float helpers for data conversion. The FBref scraper features advanced table parsing, keyword-based column mapping, and extraction of defensive metrics with per-90 calculations. Comprehensive unit tests have been implemented in test_third_party_scrapers.py, covering successful extraction, error handling, and helper functions using mocked HTML responses. All data is cleaned and structured with consistent field naming, ready for Entity Resolution Engine integration.\n</info added on 2026-01-20T18:42:00.976Z>",
-            "status": "done",
-            "testStrategy": "Unit tests for scrapers using mocked HTML responses to verify correct extraction of metrics like xG, xA, and tackles.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:42:01.546Z"
-          },
-          {
-            "id": 2,
-            "title": "Implement Entity Resolution for Player Mapping",
-            "description": "Create a mapping system to link Understat and FBref player/team IDs with official FPL IDs.",
-            "dependencies": [
-              1
-            ],
-            "details": "Use fuzzy string matching libraries like RapidFuzz combined with team-based filtering to resolve naming discrepancies across different data sources.",
-            "status": "done",
-            "testStrategy": "Verify mapping accuracy against a manual golden dataset of 50 players from different teams to ensure high precision.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:45:02.448Z"
-          },
-          {
-            "id": 3,
-            "title": "Implement Bayesian Optimization for Feature Decay",
-            "description": "Use scikit-optimize to find the optimal alpha (α) for time-decayed form calculations.",
-            "dependencies": [
+              1,
               2
             ],
-            "details": "Define an objective function that minimizes RMSE of points prediction by tuning the decay parameter α using the gp_minimize function from scikit-optimize.",
-            "status": "done",
-            "testStrategy": "Check that the optimization process converges over multiple iterations and the resulting α improves baseline model performance.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:49:59.262Z"
-          },
-          {
-            "id": 4,
-            "title": "Develop Stochastic Fixture Difficulty (FDR 2.0)",
-            "description": "Implement Poisson Regression to model team strength and calculate stochastic fixture difficulty.",
-            "dependencies": [
-              1
-            ],
-            "details": "Fit a Poisson model on historical goals scored and conceded to estimate offensive and defensive ratings for each team, replacing static FPL FDR.",
-            "status": "done",
-            "testStrategy": "Compare FDR 2.0 ratings against official FPL FDR and verify they correlate with actual goal outcomes in historical data.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:54:54.577Z"
+            "details": "Modify the Solver service and ML prediction routines. Raise `SolverTimeout` (mapping to 408) if optimization takes too long or is infeasible. Raise `ModelError` (mapping to 503) if the ML model fails to load or predict. Ensure these components do not leak implementation details (like stack traces) in the error message.",
+            "status": "pending",
+            "testStrategy": "Unit tests for Solver/ML services mocking failure conditions and verifying the specific custom exception is raised.",
+            "parentId": "undefined"
           },
           {
             "id": 5,
-            "title": "Integrate Advanced Features into Training Pipeline",
-            "description": "Merge external metrics and optimized decay features into the main feature engineering pipeline.",
+            "title": "Verify API Error Responses",
+            "description": "Add integration tests to validate the end-to-end error handling behavior.",
             "dependencies": [
               3,
               4
             ],
-            "details": "Update the feature store to include xG, xA, and FDR 2.0. Ensure the training loop uses the optimized α for form features during model training.",
-            "status": "done",
-            "testStrategy": "End-to-end test of the feature engineering pipeline to ensure no null values and correct data alignment across all sources.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T18:57:41.274Z"
+            "details": "Create a new test file `backend/tests/api/test_errors.py`. Implement test cases that hit various endpoints with invalid data, non-existent IDs, or simulated internal failures. Assert that the HTTP response status codes match expectations (400, 404, 500, etc.) and the JSON body strictly follows the standardized error schema defined in Subtask 2.",
+            "status": "pending",
+            "testStrategy": "Run the new test suite against the running application or TestClient to confirm no 500 errors leak raw stack traces.",
+            "parentId": "undefined"
           }
-        ],
-        "complexity": 8,
-        "recommendedSubtasks": 0,
-        "expansionPrompt": "No expansion needed as the subtasks already address scraping, entity resolution, Bayesian optimization, and statistical modeling (Poisson).",
-        "updatedAt": "2026-01-20T18:57:41.274Z"
+        ]
       },
       {
-        "id": "7",
-        "title": "Component-Based ML Predictive Engine",
-        "description": "Build specialized models for xMins, Attack, and Defense to generate a final xP prediction.",
-        "details": "1. xMins: XGBoost Classifier for P_start. 2. Hücum: LightGBM for xG/xA. 3. Savunma: LightGBM for P_CS. Aggregate using: `xP = (xMins/90) * [(xG * P_Goal) + (xA * P_Assist) + (xCS * P_CS) + DefCon_Pts]`. Implement DefCon features (blocks/tackles/interceptions).",
-        "testStrategy": "Compare the RMSE of this component-based approach against the Phase 0 baseline model. Validate xMins probability against actual starting lineups.",
-        "priority": "high",
-        "dependencies": [
-          "6"
-        ],
-        "status": "done",
-        "subtasks": [
-          {
-            "id": 1,
-            "title": "Feature Engineering for Component Models",
-            "description": "Prepare datasets for xMins, Attack, and Defense models, specifically implementing DefCon features.",
-            "dependencies": [],
-            "details": "Extract blocks, tackles, and interceptions from player_stats. Create lag features for xG, xA, and clean sheet history. Ensure all features are aligned with the entity_mappings from Task 3.",
-            "status": "done",
-            "testStrategy": "Verify feature distributions and ensure no null values in the engineered columns for blocks, tackles, and interceptions.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T19:08:16.573Z"
-          },
-          {
-            "id": 2,
-            "title": "xMins XGBoost Classifier Implementation",
-            "description": "Train an XGBoost Classifier to predict the probability of a player starting (P_start).",
-            "dependencies": [
-              1
-            ],
-            "details": "Use historical lineup data where the target variable is binary (started vs. benched). Features include recent starts, injury status, and team rotation patterns. Output should be a probability score.",
-            "status": "done",
-            "testStrategy": "Validate P_start probability against actual starting lineups using Log Loss and AUC-ROC metrics.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T19:11:08.485Z"
-          },
-          {
-            "id": 3,
-            "title": "Attack Component LightGBM Model",
-            "description": "Develop a LightGBM model to predict expected goals (xG) and expected assists (xA).",
-            "dependencies": [
-              1
-            ],
-            "details": "Train LightGBM regressors for xG and xA. Incorporate opponent difficulty (FDR) and player position as categorical features. Optimize hyperparameters using a grid search.",
-            "status": "done",
-            "testStrategy": "Evaluate xG and xA predictions using Mean Absolute Error (MAE) against actual match outcomes over a 5-week test window.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T20:12:35.946Z"
-          },
-          {
-            "id": 4,
-            "title": "Defense Component LightGBM Model",
-            "description": "Build a LightGBM model for Clean Sheet probability (P_CS) and defensive contribution points.",
-            "dependencies": [
-              1
-            ],
-            "details": "Predict P_CS based on team defensive strength and opponent offensive metrics. Calculate DefCon_Pts by weighting predicted blocks, tackles, and interceptions according to FPL scoring rules.",
-            "status": "done",
-            "testStrategy": "Compare predicted clean sheet probabilities against historical clean sheet rates for different team tiers and fixture difficulties.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T23:13:30.305Z"
-          },
-          {
-            "id": 5,
-            "title": "xP Aggregation and Model Validation",
-            "description": "Combine component outputs into a final xP prediction and compare against the Phase 0 baseline.",
-            "dependencies": [
-              2,
-              3,
-              4
-            ],
-            "details": "Implement the formula: xP = (xMins/90) * [(xG * P_Goal) + (xA * P_Assist) + (xCS * P_CS) + DefCon_Pts]. Use standard FPL point constants for P_Goal, P_Assist, and P_CS.",
-            "status": "done",
-            "testStrategy": "Compare the RMSE of this component-based approach against the Phase 0 baseline model. Ensure the new model shows a statistically significant improvement.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-20T23:36:05.181Z"
-          }
-        ],
-        "complexity": 9,
-        "recommendedSubtasks": 0,
-        "expansionPrompt": "No expansion needed as the subtasks cover individual model development for xMins, Attack, and Defense, plus the final aggregation logic.",
-        "updatedAt": "2026-01-20T23:36:05.181Z"
-      },
-      {
-        "id": "8",
-        "title": "Multi-Period Optimization & Strategy Generator",
-        "description": "Extend the ILP engine to optimize over a 3-to-5-week horizon including transfer costs.",
-        "details": "Modify the ILP objective to `Maximize Σ_t (xP[t] - Cost[t])`. Add decision variables for transfers `y[i,j,t]`. Penalize transfers beyond the free transfer limit (4 points). Include logic for Captain/Vice-Captain optimization based on `P_start` and `xP`.",
-        "testStrategy": "Simulate a 3-week fixture swing. Verify the solver recommends a transfer in GW2 that maximizes the total points across GW1-3 despite the immediate cost.",
+        "id": "22",
+        "title": "Create E2E Prediction Pipeline Test",
+        "description": "Implement an end-to-end test covering the flow from FPL API data ingestion to Frontend response.",
+        "details": "Create `tests/e2e/test_pipeline.py`. Simulate the full flow: 1. Trigger ETL (mock external FPL API). 2. Verify DB state. 3. Call Prediction/Optimization endpoint. 4. Verify JSON response structure and validity. This validates the integration of all components.",
+        "testStrategy": "Run the E2E test in the CI/CD pipeline. It serves as the final gate before deployment.",
         "priority": "medium",
         "dependencies": [
-          "5",
-          "7"
+          "14",
+          "16",
+          "18",
+          "20",
+          "21"
         ],
-        "status": "done",
-        "subtasks": [],
-        "complexity": 9,
-        "recommendedSubtasks": 5,
-        "expansionPrompt": "Detail the steps to extend the ILP for multi-period planning, including transfer logic, cost penalization, captaincy selection, and performance benchmarking for the multi-week horizon.",
-        "updatedAt": "2026-01-21T00:28:50.322Z"
-      },
-      {
-        "id": "9",
-        "title": "Market Intelligence & Ownership Arbitrage",
-        "description": "Develop logic to identify overvalued and undervalued assets based on ownership trends and xP.",
-        "details": "Calculate 'Ownership Arbitrage' score: `(xP_rank - Ownership_rank)`. Identify 'Overvalued' (High ownership, low xP trend) and 'Differentials' (Low ownership, high xP). Store results in `market_intelligence` table.",
-        "testStrategy": "Query the system for players with >30% ownership and declining xP. Verify they are flagged as 'Overvalued'.",
-        "priority": "low",
-        "dependencies": [
-          "7"
-        ],
-        "status": "done",
+        "status": "pending",
         "subtasks": [
           {
             "id": 1,
-            "title": "Create Market Intelligence Database Schema",
-            "description": "Define and execute the SQL DDL for the market_intelligence table to store arbitrage results.",
+            "title": "Setup E2E Test Scaffolding and Mock FPL API Data",
+            "description": "Initialize the `tests/e2e/test_pipeline.py` file and create fixtures for mocking the external FPL API responses required for the ETL process.",
             "dependencies": [],
-            "details": "Create a table with columns: player_id (int), gameweek (int), xp_rank (int), ownership_rank (int), arbitrage_score (float), category (varchar), and created_at (timestamp). Ensure foreign key constraints to the players table.",
-            "status": "done",
-            "testStrategy": "Verify table existence and schema structure using PostgreSQL information_schema queries.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-21T00:33:24.877Z"
+            "details": "Create the test file structure using pytest. Define JSON fixtures matching the FPL API schema (bootstrap-static, element-summary) to simulate gameweek data. Configure `requests-mock` or `respx` to intercept calls to `https://fantasy.premierleague.com/api/` and return these fixtures. Ensure the mock environment is isolated.",
+            "status": "pending",
+            "testStrategy": "Run `pytest tests/e2e/test_pipeline.py` and verify that the mocked endpoints are reachable and return the expected data without hitting the real API.",
+            "parentId": "undefined"
           },
           {
             "id": 2,
-            "title": "Implement Player Ranking Logic",
-            "description": "Develop a service to calculate relative ranks for players based on xP and ownership percentage.",
+            "title": "Implement ETL Trigger and Database Verification Logic",
+            "description": "Write the test logic to trigger the ETL pipeline using the mocked data and verify that the data is correctly persisted in the test database.",
             "dependencies": [
               1
             ],
-            "details": "Use window functions or pandas rank() method to assign dense ranks to players for the current gameweek. xP should be ranked descending (highest xP is rank 1) and ownership should be ranked descending.",
-            "status": "done",
-            "testStrategy": "Unit test the ranking function with a mock dataset of 10 players to ensure ranks are assigned correctly without gaps.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-21T00:40:15.710Z"
+            "details": "Import the main ETL execution function (e.g., from `backend.app.services.etl_service`). Call this function within the test. After execution, query the test database (PostgreSQL) using SQLAlchemy to verify that players, teams, and fixtures have been inserted/updated correctly based on the mock data.",
+            "status": "pending",
+            "testStrategy": "Assert that row counts in the database match the mock data size and check specific field values (e.g., player names, costs) for accuracy.",
+            "parentId": "undefined"
           },
           {
             "id": 3,
-            "title": "Develop Arbitrage Scoring and Categorization Engine",
-            "description": "Implement the core logic to compute the arbitrage score and assign market categories.",
+            "title": "Integrate Prediction Model Execution in Test Flow",
+            "description": "Extend the E2E test to trigger the prediction generation process based on the ingested data.",
             "dependencies": [
               2
             ],
-            "details": "Calculate score as (xP_rank - Ownership_rank). Logic: If ownership > 30% and xP_rank is low, label as 'Overvalued'. If ownership < 10% and xP_rank is high, label as 'Differential'.",
-            "status": "done",
-            "testStrategy": "Assert that a player with high xP rank (e.g., 5) and low ownership rank (e.g., 100) results in a negative score and 'Differential' tag.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-21T07:25:38.757Z"
+            "details": "Invoke the prediction service (e.g., `backend.app.services.prediction_service.generate_predictions`) immediately after the ETL verification. This step should populate the `predictions` table in the database. Verify that predictions exist for the upcoming gameweek defined in the mock data.",
+            "status": "pending",
+            "testStrategy": "Assert that the predictions table is not empty and that prediction scores are within valid ranges (e.g., non-negative floats).",
+            "parentId": "undefined"
           },
           {
             "id": 4,
-            "title": "Build Market Intelligence Persistence Layer",
-            "description": "Create a data access layer to upsert calculated intelligence data into the database.",
+            "title": "Test Optimization Endpoint Response",
+            "description": "Simulate an API client request to the optimization/team-selection endpoint and validate the response against the generated predictions.",
             "dependencies": [
               3
             ],
-            "details": "Implement a bulk upsert operation using SQLAlchemy or asyncpg to store the calculated ranks and scores for all players for the current gameweek, handling conflicts on (player_id, gameweek).",
-            "status": "done",
-            "testStrategy": "Execute the persistence logic and verify that the market_intelligence table contains one record per active player for the target gameweek.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-21T07:52:01.028Z"
+            "details": "Use `TestClient` from `fastapi.testclient` to send a POST/GET request to the team optimization endpoint (e.g., `/api/v1/optimization/optimize`). Ensure the request parameters (budget, positions) align with the mock data. Capture the JSON response.",
+            "status": "pending",
+            "testStrategy": "Check for HTTP 200 status code. Validate that the response body contains a valid team structure (11 starting players, 4 subs) and that the total cost is within the budget.",
+            "parentId": "undefined"
           },
           {
             "id": 5,
-            "title": "Validate Market Intelligence Output",
-            "description": "Perform end-to-end validation of the market intelligence results against the defined test strategy.",
+            "title": "Finalize E2E Pipeline Assertions and Cleanup",
+            "description": "Add comprehensive assertions for the full data lifecycle and ensure test database cleanup after execution.",
             "dependencies": [
               4
             ],
-            "details": "Query the market_intelligence table for players with >30% ownership and declining xP trends. Verify that these specific players are correctly flagged as 'Overvalued' in the category column.",
-            "status": "done",
-            "testStrategy": "Run a SQL validation script that checks for consistency between the player_stats table and the market_intelligence table flags.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-21T08:00:24.733Z"
+            "details": "Verify the consistency of the entire flow: Input Mock Data -> DB State -> Prediction Output -> API Response. Ensure the team returned by the API actually consists of players from the mock data. Implement a teardown fixture to clear the test database tables to prevent side effects on other tests.",
+            "status": "pending",
+            "testStrategy": "Run the full E2E suite. Confirm that the test passes reliably and leaves the database clean. Verify execution time is reasonable for CI inclusion.",
+            "parentId": "undefined"
           }
-        ],
-        "complexity": 4,
-        "recommendedSubtasks": 0,
-        "expansionPrompt": "No expansion needed as the subtasks already cover schema design, ranking logic, scoring, and persistence.",
-        "updatedAt": "2026-01-21T08:00:24.733Z"
-      },
-      {
-        "id": "10",
-        "title": "FastAPI Backend & Next.js Dashboard",
-        "description": "Expose the optimization and market intelligence via a REST API and build the frontend dashboard.",
-        "details": "FastAPI endpoints: `/team/optimize`, `/team/plan`, `/market/intelligence`. Next.js frontend: Create a dashboard with a 15-player pitch view, a multi-week planning heatmap, and an arbitrage table. Use SWR for data fetching.",
-        "testStrategy": "Perform end-to-end testing: Trigger an optimization via the UI and verify the recommended team matches the ILP solver output.",
-        "priority": "medium",
-        "dependencies": [
-          "8",
-          "9"
-        ],
-        "status": "done",
-        "subtasks": [
-          {
-            "id": 1,
-            "title": "Develop FastAPI REST Endpoints",
-            "description": "Implement the backend routes for team optimization, multi-period planning, and market intelligence.",
-            "dependencies": [],
-            "details": "Create endpoints /team/optimize, /team/plan, and /market/intelligence using FastAPI. Connect these routes to the existing ILP solver and market analysis logic developed in previous tasks.",
-            "status": "done",
-            "testStrategy": "Use Swagger UI (/docs) to send requests to each endpoint and verify that the JSON response structure matches the expected schema.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-21T08:20:53.284Z"
-          },
-          {
-            "id": 2,
-            "title": "Next.js Dashboard Foundation and SWR Hooks",
-            "description": "Initialize the Next.js project and implement custom SWR hooks for data fetching.",
-            "dependencies": [
-              1
-            ],
-            "details": "Set up the Next.js application structure. Create reusable SWR hooks to fetch data from the FastAPI endpoints with automatic revalidation and error handling.",
-            "status": "done",
-            "testStrategy": "Verify that the SWR hooks correctly fetch and cache data from the backend endpoints by monitoring the network tab in browser dev tools.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-21T08:45:39.582Z"
-          },
-          {
-            "id": 3,
-            "title": "15-Player Pitch View Component",
-            "description": "Build a visual representation of the optimized 15-player squad on a football pitch layout.",
-            "dependencies": [
-              2
-            ],
-            "details": "Create a React component that renders players based on their position (GK, DEF, MID, FWD) using a CSS grid or SVG pitch background to visualize the squad.",
-            "status": "done",
-            "testStrategy": "Manually verify that the 15 players returned from the /team/optimize endpoint are rendered in their correct tactical positions on the UI.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-21T08:54:11.852Z"
-          },
-          {
-            "id": 4,
-            "title": "Multi-Week Planning Heatmap",
-            "description": "Implement a heatmap visualization for the multi-period transfer strategy.",
-            "dependencies": [
-              2
-            ],
-            "details": "Develop a grid component showing players versus gameweeks, using color coding to represent fixture difficulty or expected points over the 3-to-5 week horizon.",
-            "status": "done",
-            "testStrategy": "Compare the heatmap UI against the /team/plan API response to ensure data alignment and correct color mapping across gameweeks.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-21T09:02:11.091Z"
-          },
-          {
-            "id": 5,
-            "title": "Market Intelligence Arbitrage Table",
-            "description": "Create a sortable table to display ownership arbitrage and player value insights.",
-            "dependencies": [
-              2
-            ],
-            "details": "Implement a table using the /market/intelligence data. Include columns for xP rank, ownership rank, and the calculated arbitrage score to identify differentials.",
-            "status": "done",
-            "testStrategy": "Sort the table by arbitrage score and verify that 'Differentials' and 'Overvalued' players are correctly highlighted based on the logic.",
-            "parentId": "undefined",
-            "updatedAt": "2026-01-21T09:05:25.243Z"
-          }
-        ],
-        "complexity": 7,
-        "recommendedSubtasks": 0,
-        "expansionPrompt": "No expansion needed as the subtasks cover API development, frontend foundation, and specific visualization components.",
-        "updatedAt": "2026-01-21T09:05:25.243Z"
-      },
-      {
-        "id": "11",
-        "title": "FPL Team Data Ingestion and Upsert Script",
-        "description": "Develop a Python script to fetch team information from the FPL bootstrap-static API and perform a bulk upsert into the database to satisfy foreign key requirements.",
-        "details": "The script must target the 'https://fantasy.premierleague.com/api/bootstrap-static/' endpoint. It should utilize a dedicated 'extract_teams_from_bootstrap' utility to isolate the team-specific dictionary from the JSON response. Implementation should use SQLAlchemy or a similar database adapter to perform a bulk 'upsert' (ON CONFLICT DO UPDATE) operation on the 'teams' table. This ensures that team metadata, such as strength ratings and difficulty rankings, is updated while maintaining stable IDs for foreign key references from the players table. The script should be designed to run as a standalone utility or as part of a larger ETL pipeline.",
-        "testStrategy": "1. Execute the script against a clean database and verify that exactly 20 records are created in the 'teams' table. 2. Manually modify a team's strength value in the database, re-run the script, and verify the value is updated back to the API's current value (validating upsert logic). 3. Verify that a player record can be successfully inserted with a foreign key pointing to one of the newly created team IDs.",
-        "status": "done",
-        "dependencies": [
-          "1"
-        ],
-        "priority": "high",
-        "subtasks": [],
-        "updatedAt": "2026-01-20T16:02:28.910Z"
-      },
-      {
-        "id": "12",
-        "title": "FPL Player Data Ingestion and Refresh Script",
-        "description": "Develop a Python script to fetch player information from the FPL bootstrap-static API and perform a bulk upsert into the database, linking players to their respective teams.",
-        "details": "The script 'refresh_players.py' will target the 'elements' key within the FPL bootstrap-static JSON response. It must map FPL's 'element_type' to the internal position schema (1: GK, 2: DEF, 3: MID, 4: FWD) and link the 'team' ID to the 'team_id' foreign key in the players table. Implementation should use SQLAlchemy's 'insert().on_conflict_do_update()' to ensure that dynamic data like 'now_cost' (stored as an integer representing 10x the price) and 'selected_by_percent' are updated daily. The script must handle the database connection via environment variables and include logging for the number of records processed. It is critical that this script runs after the teams table is populated to satisfy foreign key constraints.",
-        "testStrategy": "1. Execute the script and verify that the 'players' table contains the expected number of records (typically 600-800). 2. Run a SQL join between 'players' and 'teams' to ensure no orphaned records exist and all team_ids are valid. 3. Manually change a player's price or ownership percentage in the database, re-run the script, and confirm the values are restored to the API's current state. 4. Verify that the 'position' mapping correctly identifies player roles based on the 'element_type' integer from the API.",
-        "status": "done",
-        "dependencies": [
-          "1",
-          "11"
-        ],
-        "priority": "high",
-        "subtasks": [],
-        "updatedAt": "2026-01-20T16:04:25.206Z"
+        ]
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-01-21T09:05:25.243Z",
-      "taskCount": 12,
-      "completedCount": 12,
+      "lastModified": "2026-01-26T00:27:52.882Z",
+      "taskCount": 10,
+      "completedCount": 3,
       "tags": [
         "master"
       ]

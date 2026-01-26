@@ -82,9 +82,11 @@ from app.services.entity_resolution import EntityResolutionService
 from app.services.data_cleaning import DataCleaningService
 from app.services.etl_service import ETLService
 from app.services.market_intelligence import MarketIntelligenceService
+from app.services.startup_validation import StartupValidator
 from app.models import Player, PlayerGameweekStats, Prediction
 import logging
 import asyncio
+import sys
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -2597,6 +2599,112 @@ async def startup_event():
     warnings.filterwarnings("ignore", category=UserWarning)
     warnings.filterwarnings("ignore", message=".*protected namespace.*")
 
+    # CRITICAL: Validate startup health before proceeding
+    # This prevents broken deployments from reaching production
+    logger.info("Starting startup health validation orchestrator...")
+    try:
+        # Load validation configuration from environment variables
+        # Model paths: Optional comma-separated list of model file paths
+        model_paths = None
+        model_paths_env = os.getenv("MODEL_PATHS")
+        if model_paths_env:
+            model_paths = [path.strip() for path in model_paths_env.split(",") if path.strip()]
+
+        # Model checksums: Format "path1:checksum1,path2:checksum2"
+        model_checksums = {}
+        checksum_env = os.getenv("MODEL_CHECKSUMS")
+        if checksum_env:
+            for pair in checksum_env.split(","):
+                if ":" in pair:
+                    path, checksum = pair.split(":", 1)
+                    model_checksums[path.strip()] = checksum.strip()
+                else:
+                    logger.warning(f"Invalid checksum format (expected 'path:checksum'): {pair}")
+
+        # Database configuration
+        database_url = os.getenv("DATABASE_URL")
+        db_timeout = float(os.getenv("DB_VALIDATION_TIMEOUT", "2.0"))
+        
+        # Model validation timeout (optional, for network-mounted filesystems)
+        model_timeout = os.getenv("MODEL_VALIDATION_TIMEOUT")
+        model_timeout_float = float(model_timeout) if model_timeout else None
+        
+        # Performance budget (default: 5 seconds)
+        performance_budget = float(os.getenv("VALIDATION_PERFORMANCE_BUDGET", "5.0"))
+
+        # Create validation orchestrator
+        validator = StartupValidator(
+            model_paths=model_paths,  # None = auto-detect from PLEngine
+            model_checksums=model_checksums if model_checksums else None,
+            db_timeout=db_timeout,
+            database_url=database_url,
+            model_timeout=model_timeout_float,
+            performance_budget_seconds=performance_budget,
+        )
+
+        # Execute all validations
+        all_healthy, results = await validator.validate_all()
+
+        if not all_healthy:
+            # Log detailed error report with structured logging
+            report = validator.get_validation_report(results)
+            logger.critical("=" * 60)
+            logger.critical("STARTUP VALIDATION FAILED")
+            logger.critical("=" * 60)
+            logger.critical(report)
+            logger.critical("=" * 60)
+
+            # Log individual failures with severity levels
+            for result in results:
+                if not result.is_healthy():
+                    logger.critical(
+                        f"CRITICAL: {result.name} validation failed",
+                        extra={
+                            "validation_name": result.name,
+                            "status": result.status,
+                            "error_message": result.error_message,
+                            "timestamp": result.timestamp.isoformat() if result.timestamp else None,
+                        }
+                    )
+
+            # Exit with code 1 to prevent broken deployment
+            logger.critical("API startup aborted due to validation failures. Exiting with code 1...")
+            sys.exit(1)
+
+        # All validations passed
+        logger.info("=" * 60)
+        logger.info("STARTUP VALIDATION PASSED")
+        logger.info("=" * 60)
+        report = validator.get_validation_report(results)
+        logger.info(report)
+        logger.info("=" * 60)
+        logger.info("All dependencies are healthy. Proceeding with API startup...")
+
+    except KeyError as e:
+        # Missing configuration
+        logger.critical(
+            f"CRITICAL: Missing required validation configuration: {str(e)}",
+            exc_info=True
+        )
+        logger.critical("API startup aborted due to configuration error. Exiting...")
+        sys.exit(1)
+    except ValueError as e:
+        # Invalid configuration format
+        logger.critical(
+            f"CRITICAL: Invalid validation configuration format: {str(e)}",
+            exc_info=True
+        )
+        logger.critical("API startup aborted due to configuration error. Exiting...")
+        sys.exit(1)
+    except Exception as e:
+        # Unexpected error during validation
+        logger.critical(
+            f"CRITICAL: Startup validation orchestrator encountered an unexpected error: {str(e)}",
+            exc_info=True
+        )
+        logger.critical("API startup aborted. Exiting...")
+        sys.exit(1)
+
     try:
         await entity_resolution.load_master_map()
         logger.info("Master ID Map loaded successfully")
@@ -2605,10 +2713,12 @@ async def startup_event():
 
     # CRITICAL: Load ML models into memory
     try:
-        ml_engine._ensure_models_loaded()
+        await ml_engine._ensure_models_loaded()
         logger.info("ML Engine models loaded successfully")
     except Exception as e:
-        logger.error(f"Failed to load ML Engine models on startup: {str(e)}")
+        logger.critical(f"CRITICAL: Failed to load ML Engine models on startup: {str(e)}")
+        logger.critical("API cannot function without ML models. Exiting...")
+        sys.exit(1)
 
     # BATCH PREDICTION: Update predictions in background (non-blocking)
     try:

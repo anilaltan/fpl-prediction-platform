@@ -23,7 +23,44 @@ except ImportError:
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 
-from ..interfaces import ModelInterface
+# Handle both relative and absolute imports for script/module compatibility
+try:
+    from ..interfaces import ModelInterface
+    from ..calculations import (
+        calculate_rolling_average,
+        calculate_lag_feature,
+        calculate_clean_sheet_rate,
+        pad_list,
+        calculate_xg_per_90,
+        calculate_xa_per_90,
+        calculate_goals_per_90,
+        calculate_assists_per_90,
+    )
+except ImportError:
+    # Fallback for direct script execution
+    import sys
+    import os
+    from pathlib import Path
+    # Add backend directory to path (works in Docker where /app is the backend root)
+    current_file = Path(__file__).resolve()
+    # Try /app first (Docker container), then fallback to relative path
+    if os.path.exists("/app"):
+        backend_dir = Path("/app")
+    else:
+        backend_dir = current_file.parent.parent.parent.parent
+    if str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    from app.services.ml.interfaces import ModelInterface
+    from app.services.ml.calculations import (
+        calculate_rolling_average,
+        calculate_lag_feature,
+        calculate_clean_sheet_rate,
+        pad_list,
+        calculate_xg_per_90,
+        calculate_xa_per_90,
+        calculate_goals_per_90,
+        calculate_assists_per_90,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +84,7 @@ class AttackStrategy(ModelInterface):
         self._model_path: Optional[str] = None
         # Auto-initialize empty models for immediate use
         self._initialize_empty_model()
-        self._loaded = True
+        # Don't set _loaded = True here - wait for actual load()
 
     async def load(self, model_path: Optional[str] = None) -> None:
         """
@@ -56,15 +93,16 @@ class AttackStrategy(ModelInterface):
         Args:
             model_path: Optional path to model file. If None, initializes empty model.
         """
-        if self._loaded:
-            return
-
         self._model_path = model_path
 
         if model_path and os.path.exists(model_path):
             try:
                 # Load from pickle file asynchronously
-                loop = asyncio.get_event_loop()
+                # Use get_running_loop() if available, otherwise get_event_loop()
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = asyncio.get_event_loop()
                 model_data = await loop.run_in_executor(
                     None, self._load_pickle, model_path
                 )
@@ -77,16 +115,38 @@ class AttackStrategy(ModelInterface):
                     self.scaler = model_data.get("attack_scaler", StandardScaler())
                     self.xg_trained = True
                     self.xa_trained = True
+                    self._loaded = True  # Ensure loaded flag is set after successful load
                     logger.info(f"Loaded Attack model from {model_path}")
+                else:
+                    available_keys = list(model_data.keys()) if isinstance(model_data, dict) else "not a dict"
+                    error_msg = (
+                        f"No attack models found in {model_path}. "
+                        f"Available keys: {available_keys}"
+                    )
+                    logger.error(error_msg)
+                    self._initialize_empty_model()
+                    self._loaded = False
+                    self.xg_trained = False
+                    self.xa_trained = False
+                    raise ValueError(error_msg)
             except Exception as e:
-                logger.warning(
-                    f"Failed to load Attack model from {model_path}: {str(e)}"
+                logger.error(
+                    f"Failed to load Attack model from {model_path}: {str(e)}",
+                    exc_info=True
                 )
                 self._initialize_empty_model()
+                self._loaded = False
+                self.xg_trained = False
+                self.xa_trained = False
+                raise
         else:
+            if not model_path:
+                logger.debug("No model path provided, keeping empty model")
+            else:
+                logger.warning(f"Model path does not exist: {model_path}")
             self._initialize_empty_model()
-
-        self._loaded = True
+            # Don't set _loaded = True here - model is not actually loaded
+            self._loaded = False
 
     def _initialize_empty_model(self) -> None:
         """Initialize empty models (not trained)."""
@@ -163,119 +223,126 @@ class AttackStrategy(ModelInterface):
     ) -> np.ndarray:
         """
         Extract features for xG/xA prediction.
-
-        Features:
-        - Player historical xG/xA per 90
-        - Opponent xGC (Expected Goals Conceded) - KEY FEATURE
-        - Home/away advantage
-        - Recent form
-        - Fixture difficulty
+        
+        Must match the 29 features used during training:
+        - was_home (1)
+        - opponent_team (1)
+        - xg_per_90, xa_per_90, goals_per_90, assists_per_90 (4)
+        - DefCon features (7): blocks_per_90, interventions_per_90, passes_per_90,
+          defcon_floor_points, avg_blocks, avg_interventions, avg_passes
+        - Lag features (16): xg_lag_1, xg_lag_3, xg_lag_5, xg_rolling_3, xg_rolling_5,
+          xa_lag_1, xa_lag_3, xa_lag_5, xa_rolling_3, xa_rolling_5,
+          cs_lag_1, cs_lag_3, cs_lag_5, cs_rolling_3, cs_rolling_5, cs_rate
         """
-        # Player historical stats with robust fallbacks
+        # 1. was_home (1 feature)
+        was_home = 1.0 if fixture_data and fixture_data.get("is_home", True) else 0.0
+        
+        # 2. opponent_team (1 feature) - use team ID or default to 0
+        opponent_team = float(fixture_data.get("opponent_team", 0) if fixture_data else 0)
+        
+        # 3. Per-90 stats (4 features) - use pure calculation functions
         minutes = float(player_data.get("minutes", 0) or 0)
-        per90_scale = 90.0 / max(minutes, 1.0)
-
-        xg_per_90 = float(
-            player_data.get(
-                "xg_per_90",
-                player_data.get(
-                    "expected_goals", player_data.get("xg", 0.0) * per90_scale
-                ),
-            )
-        )
-        xa_per_90 = float(
-            player_data.get(
-                "xa_per_90",
-                player_data.get(
-                    "expected_assists", player_data.get("xa", 0.0) * per90_scale
-                ),
-            )
-        )
+        
+        # Try to get pre-calculated per-90 values, otherwise calculate from totals
+        xg_per_90 = float(player_data.get("xg_per_90", 0.0))
+        if xg_per_90 == 0.0:
+            xg_total = float(player_data.get("expected_goals", player_data.get("xg", 0.0)))
+            xg_per_90 = calculate_xg_per_90(xg_total, minutes)
+        
+        xa_per_90 = float(player_data.get("xa_per_90", 0.0))
+        if xa_per_90 == 0.0:
+            xa_total = float(player_data.get("expected_assists", player_data.get("xa", 0.0)))
+            xa_per_90 = calculate_xa_per_90(xa_total, minutes)
+        
         goals_per_90 = float(player_data.get("goals_per_90", 0.0))
-        assists_per_90 = float(player_data.get("assists_per_90", 0.0))
-
-        # Fill per-90 goals/assists if absent but raw match totals exist
         if goals_per_90 == 0.0 and "goals" in player_data:
-            goals_per_90 = float(player_data.get("goals", 0.0)) * per90_scale
+            goals_total = float(player_data.get("goals", 0.0))
+            goals_per_90 = calculate_goals_per_90(goals_total, minutes)
+        
+        assists_per_90 = float(player_data.get("assists_per_90", 0.0))
         if assists_per_90 == 0.0 and "assists" in player_data:
-            assists_per_90 = float(player_data.get("assists", 0.0)) * per90_scale
-
-        # Recent form (last 5 games)
-        recent_xg = player_data.get("recent_xg", [])
-        recent_xa = player_data.get("recent_xa", [])
-        recent_xg_avg = (
-            float(np.mean(recent_xg)) if recent_xg and len(recent_xg) > 0 else xg_per_90
-        )
-        recent_xa_avg = (
-            float(np.mean(recent_xa)) if recent_xa and len(recent_xa) > 0 else xa_per_90
-        )
-
-        # OPPONENT xGC (Expected Goals Conceded) - KEY FEATURE for normalization
-        if opponent_data:
-            opponent_xgc = float(
-                opponent_data.get(
-                    "xgc_per_90", opponent_data.get("expected_goals_conceded", 1.5)
-                )
-            )
-            opponent_defense_strength = float(
-                opponent_data.get("defense_strength", 0.0)
-            )
-        elif fdr_data:
-            opponent_defense_strength = float(
-                fdr_data.get("opponent_defense_strength", 0.0)
-            )
-            opponent_xgc = 1.5 - (opponent_defense_strength * 0.1)  # Estimate
-        else:
-            opponent_xgc = 1.5
-            opponent_defense_strength = 0.0
-
-        # Normalize player xG/xA by opponent xGC
-        xgc_normalization_factor = opponent_xgc / 1.5
-        normalized_xg_per_90 = float(xg_per_90 * xgc_normalization_factor)
-        normalized_xa_per_90 = float(xa_per_90 * xgc_normalization_factor)
-
-        # Fixture difficulty
-        if fdr_data:
-            fdr = float(fdr_data.get("fdr", 3.0))
-            opponent_attack = float(fdr_data.get("opponent_attack_strength", 0.0))
-        else:
-            fdr = 3.0
-            opponent_attack = 0.0
-
-        # Home/away
-        is_home = 1.0 if fixture_data and fixture_data.get("is_home", True) else 0.0
-
-        # Position
-        position = player_data.get("position", "MID")
-        position_encoded = {"GK": 0, "DEF": 1, "MID": 2, "FWD": 3}.get(position, 2)
-
-        # Team attack strength
-        team_attack = float(player_data.get("team_attack_strength", 0.0))
-
-        # Expected minutes factor
-        expected_minutes = float(player_data.get("expected_minutes", 90.0)) / 90.0
-
-        features = np.array(
-            [
-                normalized_xg_per_90,
-                normalized_xa_per_90,
-                xg_per_90,
-                xa_per_90,
-                goals_per_90,
-                assists_per_90,
-                recent_xg_avg,
-                recent_xa_avg,
-                opponent_xgc,
-                opponent_defense_strength,
-                opponent_attack,
-                fdr / 5.0,
-                is_home,
-                position_encoded / 3.0,
-                team_attack,
-                expected_minutes,
-                xgc_normalization_factor,
-            ]
-        )
+            assists_total = float(player_data.get("assists", 0.0))
+            assists_per_90 = calculate_assists_per_90(assists_total, minutes)
+        
+        # 4. DefCon features (7 features)
+        blocks_per_90 = float(player_data.get("blocks_per_90", 0.0))
+        interventions_per_90 = float(player_data.get("interventions_per_90", 0.0))
+        passes_per_90 = float(player_data.get("passes_per_90", 0.0))
+        defcon_floor_points = float(player_data.get("defcon_floor_points", 0.0))
+        avg_blocks = float(player_data.get("avg_blocks", 0.0))
+        avg_interventions = float(player_data.get("avg_interventions", 0.0))
+        avg_passes = float(player_data.get("avg_passes", 0.0))
+        
+        # 5. Lag features (16 features) - extract from recent stats using pure functions
+        recent_xg = pad_list(player_data.get("recent_xg", []), 5)
+        recent_xa = pad_list(player_data.get("recent_xa", []), 5)
+        recent_cs = pad_list(player_data.get("recent_cs", []), 5)
+        recent_minutes = player_data.get("recent_minutes", [])
+        
+        # xG lag features (1, 3, 5)
+        xg_lag_1 = calculate_lag_feature(recent_xg, 1)
+        xg_lag_3 = calculate_lag_feature(recent_xg, 3)
+        xg_lag_5 = calculate_lag_feature(recent_xg, 5)
+        
+        # xG rolling averages (3, 5)
+        xg_rolling_3 = calculate_rolling_average(recent_xg, 3)
+        xg_rolling_5 = calculate_rolling_average(recent_xg, 5)
+        
+        # xA lag features (1, 3, 5)
+        xa_lag_1 = calculate_lag_feature(recent_xa, 1)
+        xa_lag_3 = calculate_lag_feature(recent_xa, 3)
+        xa_lag_5 = calculate_lag_feature(recent_xa, 5)
+        
+        # xA rolling averages (3, 5)
+        xa_rolling_3 = calculate_rolling_average(recent_xa, 3)
+        xa_rolling_5 = calculate_rolling_average(recent_xa, 5)
+        
+        # Clean sheet lag features (1, 3, 5)
+        cs_lag_1 = calculate_lag_feature(recent_cs, 1)
+        cs_lag_3 = calculate_lag_feature(recent_cs, 3)
+        cs_lag_5 = calculate_lag_feature(recent_cs, 5)
+        
+        # Clean sheet rolling averages (3, 5)
+        cs_rolling_3 = calculate_rolling_average(recent_cs, 3)
+        cs_rolling_5 = calculate_rolling_average(recent_cs, 5)
+        
+        # Clean sheet rate
+        cs_rate = calculate_clean_sheet_rate(recent_cs, recent_minutes)
+        
+        # Build feature array in the same order as training:
+        # was_home, opponent_team, xg_per_90, xa_per_90, goals_per_90, assists_per_90,
+        # defcon (7), lag (16)
+        features = np.array([
+            was_home,  # 1
+            opponent_team,  # 2
+            xg_per_90,  # 3
+            xa_per_90,  # 4
+            goals_per_90,  # 5
+            assists_per_90,  # 6
+            blocks_per_90,  # 7
+            interventions_per_90,  # 8
+            passes_per_90,  # 9
+            defcon_floor_points,  # 10
+            avg_blocks,  # 11
+            avg_interventions,  # 12
+            avg_passes,  # 13
+            xg_lag_1,  # 14
+            xg_lag_3,  # 15
+            xg_lag_5,  # 16
+            xg_rolling_3,  # 17
+            xg_rolling_5,  # 18
+            xa_lag_1,  # 19
+            xa_lag_3,  # 20
+            xa_lag_5,  # 21
+            xa_rolling_3,  # 22
+            xa_rolling_5,  # 23
+            cs_lag_1,  # 24
+            cs_lag_3,  # 25
+            cs_lag_5,  # 26
+            cs_rolling_3,  # 27
+            cs_rolling_5,  # 28
+            cs_rate,  # 29
+        ], dtype=np.float32)
 
         return features.reshape(1, -1)
 
@@ -507,7 +574,8 @@ class AttackStrategy(ModelInterface):
         Returns:
             Dictionary with 'xg' and 'xa' predictions
         """
-        if not self.is_loaded:
+        # Check if model is available (either loaded or trained with model object)
+        if not self.is_loaded and not (self.xg_trained and self.xg_model is not None):
             raise RuntimeError("Model not loaded. Call load() first.")
 
         # Calculate FDR scaling multiplier

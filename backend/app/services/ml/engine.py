@@ -144,17 +144,30 @@ class PLEngine:
         Ensure models are loaded (synchronous fallback).
 
         Used for backward compatibility with synchronous code.
+        Note: If called from async context, models should be pre-loaded.
         """
-        if not self.xmins_strategy.is_loaded:
+        # Check if models are trained, not just loaded
+        # (models can be "loaded" but not trained if they're empty)
+        # If we're in an async context, models should already be loaded
+        try:
+            asyncio.get_running_loop()
+            # We're in an async context - models should be pre-loaded
+            # If not trained, that's a problem but we can't load here
+            return
+        except RuntimeError:
+            # No running loop, safe to use asyncio.run()
+            pass
+        
+        if not self.xmins_strategy.is_trained:
             # Synchronous load as fallback
             asyncio.run(
                 self.model_loader.load_model(self.xmins_strategy, self.model_path)
             )
-        if not self.attack_strategy.is_loaded:
+        if not self.attack_strategy.xg_trained:
             asyncio.run(
                 self.model_loader.load_model(self.attack_strategy, self.model_path)
             )
-        if not self.defense_strategy.is_loaded:
+        if not self.defense_strategy.is_fitted:
             asyncio.run(
                 self.model_loader.load_model(self.defense_strategy, self.model_path)
             )
@@ -167,9 +180,91 @@ class PLEngine:
             model_path: Optional path to model file
         """
         path = model_path or self.model_path
-        await self.model_loader.load_model(self.xmins_strategy, path)
-        await self.model_loader.load_model(self.attack_strategy, path)
-        await self.model_loader.load_model(self.defense_strategy, path)
+        if not path:
+            raise ValueError("No model path provided and no default model path set")
+        
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Model file not found: {path}")
+        
+        # Update model_path if new path provided
+        if model_path:
+            self.model_path = model_path
+        
+        # Load all strategies with detailed logging
+        # IMPORTANT: Load all strategies WITHOUT unloading others between loads
+        # We want all strategies loaded simultaneously for prediction
+        logger.info(f"[PLEngine.async_load_models] Loading xMins strategy from {path}")
+        logger.info(f"[PLEngine.async_load_models] xMins state before: is_loaded={self.xmins_strategy.is_loaded}, model={'exists' if self.xmins_strategy.model is not None else 'None'}")
+        try:
+            # Temporarily disable unloading of other models by loading directly
+            # This ensures xMins doesn't get unloaded when we load Attack
+            await self.xmins_strategy.load(path)
+            logger.info(f"[PLEngine.async_load_models] xMins direct load completed: is_loaded={self.xmins_strategy.is_loaded}, model={'exists' if self.xmins_strategy.model is not None else 'None'}")
+            # Add to loaded models list manually
+            if self.xmins_strategy not in self.model_loader._loaded_models:
+                self.model_loader._loaded_models.append(self.xmins_strategy)
+        except Exception as e:
+            logger.error(f"[PLEngine.async_load_models] Failed to load xMins: {str(e)}", exc_info=True)
+            raise
+        
+        logger.info(f"[PLEngine.async_load_models] Loading Attack strategy from {path}")
+        logger.info(f"[PLEngine.async_load_models] Attack state before: is_loaded={self.attack_strategy.is_loaded}")
+        try:
+            await self.attack_strategy.load(path)
+            logger.info(f"[PLEngine.async_load_models] Attack direct load completed: is_loaded={self.attack_strategy.is_loaded}")
+            # Add to loaded models list manually
+            if self.attack_strategy not in self.model_loader._loaded_models:
+                self.model_loader._loaded_models.append(self.attack_strategy)
+        except Exception as e:
+            logger.error(f"[PLEngine.async_load_models] Failed to load Attack: {str(e)}", exc_info=True)
+            raise
+        
+        logger.info(f"[PLEngine.async_load_models] Loading Defense strategy from {path}")
+        try:
+            await self.defense_strategy.load(path)
+            if self.defense_strategy not in self.model_loader._loaded_models:
+                self.model_loader._loaded_models.append(self.defense_strategy)
+        except Exception as e:
+            logger.warning(f"[PLEngine.async_load_models] Failed to load Defense (non-critical): {str(e)}")
+        
+        # Validate that models were actually loaded
+        logger.info(f"[PLEngine.async_load_models] Validating loaded models...")
+        # Check internal state directly for more accurate debugging
+        xmins_loaded_flag = getattr(self.xmins_strategy, '_loaded', False)
+        xmins_trained_flag = getattr(self.xmins_strategy, '_is_trained', False)
+        xmins_model_exists = self.xmins_strategy.model is not None
+        logger.info(
+            f"[PLEngine.async_load_models] xMins validation: "
+            f"is_loaded={self.xmins_strategy.is_loaded}, "
+            f"_loaded={xmins_loaded_flag}, "
+            f"is_trained={self.xmins_strategy.is_trained}, "
+            f"_is_trained={xmins_trained_flag}, "
+            f"model={'exists' if xmins_model_exists else 'None'}, "
+            f"model_type={type(self.xmins_strategy.model).__name__ if xmins_model_exists else 'None'}"
+        )
+        if not self.xmins_strategy.is_loaded or self.xmins_strategy.model is None:
+            # Provide detailed diagnostic information
+            error_details = (
+                f"xMins model failed to load from {path}. "
+                f"is_loaded={self.xmins_strategy.is_loaded}, "
+                f"_loaded={xmins_loaded_flag}, "
+                f"is_trained={self.xmins_strategy.is_trained}, "
+                f"_is_trained={xmins_trained_flag}, "
+                f"model={'exists' if xmins_model_exists else 'None'}, "
+                f"model_path={getattr(self.xmins_strategy, '_model_path', 'None')}"
+            )
+            logger.error(f"[PLEngine.async_load_models] {error_details}")
+            raise RuntimeError(error_details)
+        
+        if not self.attack_strategy.is_loaded or self.attack_strategy.xg_model is None or self.attack_strategy.xa_model is None:
+            raise RuntimeError(
+                f"Attack model failed to load from {path}. "
+                f"is_loaded={self.attack_strategy.is_loaded}, "
+                f"xg_model={'exists' if self.attack_strategy.xg_model is not None else 'None'}, "
+                f"xa_model={'exists' if self.attack_strategy.xa_model is not None else 'None'}"
+            )
+        
+        logger.info(f"Successfully loaded all models from {path}")
 
     async def async_unload_models(self) -> None:
         """
@@ -198,19 +293,24 @@ class PLEngine:
             return
 
         try:
+            # Verify models exist before saving
+            if self.xmins_strategy.model is None:
+                logger.error("Cannot save: xMins model is None despite is_trained=True")
+                raise ValueError("xMins model is None")
+            if self.attack_strategy.xg_model is None:
+                logger.error("Cannot save: Attack xG model is None despite xg_trained=True")
+                raise ValueError("Attack xG model is None")
+            if self.attack_strategy.xa_model is None:
+                logger.error("Cannot save: Attack xA model is None despite xa_trained=True")
+                raise ValueError("Attack xA model is None")
+            
             # Prepare model data
             model_data = {
-                "xmins_model": self.xmins_strategy.model
-                if self.xmins_strategy.is_trained
-                else None,
+                "xmins_model": self.xmins_strategy.model,
                 "xmins_scaler": self.xmins_strategy.scaler,
                 "xmins_feature_names": self.xmins_strategy.feature_names,
-                "attack_xg_model": self.attack_strategy.xg_model
-                if self.attack_strategy.xg_trained
-                else None,
-                "attack_xa_model": self.attack_strategy.xa_model
-                if self.attack_strategy.xa_trained
-                else None,
+                "attack_xg_model": self.attack_strategy.xg_model,
+                "attack_xa_model": self.attack_strategy.xa_model,
                 "attack_scaler": self.attack_strategy.scaler,
                 "defense_model": self.defense_strategy.pcs_model
                 if self.defense_strategy.is_fitted
@@ -218,6 +318,12 @@ class PLEngine:
                 "defense_scaler": self.defense_strategy.scaler,
                 "version": self.model_version,
             }
+            
+            logger.debug(
+                f"Saving models - xMins: {type(self.xmins_strategy.model).__name__}, "
+                f"Attack xG: {type(self.attack_strategy.xg_model).__name__}, "
+                f"Attack xA: {type(self.attack_strategy.xa_model).__name__}"
+            )
 
             # Run pickle save in executor
             loop = asyncio.get_event_loop()
@@ -262,9 +368,10 @@ class PLEngine:
         Returns:
             Dictionary with xP and component breakdowns
         """
-        # Ensure models are loaded (synchronous fallback for compatibility)
-        self._ensure_models_loaded_sync()
-
+        # Note: Models should be pre-loaded before calling this method
+        # In async contexts, use async_load_models() first
+        # In sync contexts, _ensure_models_loaded_sync() can be used
+        
         position = player_data.get("position", "MID")
         fpl_id = player_data.get("fpl_id", "unknown")
 
@@ -378,15 +485,18 @@ class PLEngine:
         if self.calibration_enabled and self.calibration_fitted:
             xp_calibrated = (xp * self.calibration_scale) + self.calibration_offset
             xp = max(0.0, xp_calibrated)
-        elif hasattr(self, "_historical_mean_actual") and hasattr(
-            self, "_historical_mean_predicted"
+        elif (
+            hasattr(self, "_historical_mean_actual")
+            and hasattr(self, "_historical_mean_predicted")
+            and self._historical_mean_actual is not None
+            and self._historical_mean_predicted is not None
+            and self._historical_mean_predicted > 0
         ):
-            if self._historical_mean_predicted > 0:
-                conservative_scale = (
-                    self._historical_mean_actual / self._historical_mean_predicted
-                )
-                if abs(conservative_scale - 1.0) > 0.1:
-                    xp = xp * conservative_scale
+            conservative_scale = (
+                self._historical_mean_actual / self._historical_mean_predicted
+            )
+            if abs(conservative_scale - 1.0) > 0.1:
+                xp = xp * conservative_scale
 
         # Memory management
         gc.collect()
@@ -429,12 +539,81 @@ class PLEngine:
             attack_xa_labels: Target xA values
         """
         # Ensure strategies are initialized
+        # Check if we're in an async context
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in an async context - cannot use asyncio.run()
+            # This method should not be called from async context
+            # Use async_train() instead
+            raise RuntimeError(
+                "train() cannot be called from async context. Use async_train() instead."
+            )
+        except RuntimeError:
+            # No running loop, safe to use asyncio.run()
+            if not self.xmins_strategy.is_loaded:
+                asyncio.run(self.xmins_strategy.load())
+            if not self.attack_strategy.is_loaded:
+                asyncio.run(self.attack_strategy.load())
+            if not self.defense_strategy.is_loaded:
+                asyncio.run(self.defense_strategy.load())
+
+        # Train xMins model
+        if xmins_features is not None and xmins_labels is not None:
+            if len(xmins_features) > 0 and len(xmins_labels) > 0:
+                self.xmins_strategy.train(xmins_features, xmins_labels)
+                gc.collect()
+
+        # Train Attack model
+        if (
+            attack_features is not None
+            and attack_xg_labels is not None
+            and attack_xa_labels is not None
+        ):
+            if (
+                len(attack_features) > 0
+                and len(attack_xg_labels) > 0
+                and len(attack_xa_labels) > 0
+            ):
+                self.attack_strategy.train(
+                    attack_features, attack_xg_labels, attack_xa_labels
+                )
+                gc.collect()
+
+        # Fit Defense model (Poisson - no training data needed, uses team strengths)
+        if not training_data.empty:
+            self.defense_strategy.is_fitted = True
+            logger.info("Defense model marked as fitted (using Poisson calculation)")
+            gc.collect()
+
+        logger.info("All PLEngine models trained successfully")
+
+    async def async_train(
+        self,
+        training_data: pd.DataFrame,
+        xmins_features: Optional[np.ndarray] = None,
+        xmins_labels: Optional[np.ndarray] = None,
+        attack_features: Optional[np.ndarray] = None,
+        attack_xg_labels: Optional[np.ndarray] = None,
+        attack_xa_labels: Optional[np.ndarray] = None,
+    ) -> None:
+        """
+        Train all component models (async version).
+
+        Args:
+            training_data: Historical training data
+            xmins_features: Features for xMins model
+            xmins_labels: Labels for xMins (1=started, 0=didn't start)
+            attack_features: Features for Attack model
+            attack_xg_labels: Target xG values
+            attack_xa_labels: Target xA values
+        """
+        # Ensure strategies are initialized (async version)
         if not self.xmins_strategy.is_loaded:
-            asyncio.run(self.xmins_strategy.load())
+            await self.xmins_strategy.load()
         if not self.attack_strategy.is_loaded:
-            asyncio.run(self.attack_strategy.load())
+            await self.attack_strategy.load()
         if not self.defense_strategy.is_loaded:
-            asyncio.run(self.defense_strategy.load())
+            await self.defense_strategy.load()
 
         # Train xMins model
         if xmins_features is not None and xmins_labels is not None:
@@ -471,6 +650,7 @@ class PLEngine:
         player_data: Dict,
         historical_points: Optional[List[float]] = None,
         fixture_data: Optional[Dict] = None,
+        third_party_data: Optional[Dict] = None,
     ) -> Dict[str, float]:
         """
         Predict points for a player using comprehensive xP calculation.
@@ -483,6 +663,18 @@ class PLEngine:
         Returns:
             Dictionary with predicted points and component breakdowns
         """
+        # Verify models are loaded and trained
+        if not self.xmins_strategy.is_trained or self.xmins_strategy.model is None:
+            raise RuntimeError(
+                "xMins model not loaded or not trained. "
+                "Please load models first using async_load_models() or train models."
+            )
+        if not self.attack_strategy.xg_trained or self.attack_strategy.xg_model is None:
+            raise RuntimeError(
+                "Attack model not loaded or not trained. "
+                "Please load models first using async_load_models() or train models."
+            )
+        
         # Get FDR and team data
         fdr_data = None
         team_data = None
@@ -494,6 +686,7 @@ class PLEngine:
                 historical_points=historical_points or [],
                 fixture_data=fixture_data,
                 position=player_data.get("position", "MID"),
+                third_party_data=third_party_data,
             )
 
             fdr_data = {
